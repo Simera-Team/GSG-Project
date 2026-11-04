@@ -13,3 +13,11 @@ class ISourceFileRepository(ABC):
     @abstractmethod
     def get_by_id(self, file_id: int) -> SourceFile | None:
         pass
+
+    @abstractmethod
+    def get_by_profile_and_hash(
+        self,
+        profile_id: int,
+        file_hash: str
+    ) -> SourceFile | None:
+        pass

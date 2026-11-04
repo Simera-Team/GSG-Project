@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -9,6 +11,13 @@ from app.infrastructure.persistence.db.session import get_db
 from app.presentation.routers.auth_router import router as auth_router
 from app.presentation.routers.cv_router import router as cv_router
 
+
+# Application loggers (e.g. blocked duplicate uploads, FR-055) log at INFO;
+# without this, Python's default WARNING level drops them.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
 
 app = FastAPI(title="Simera API")
 

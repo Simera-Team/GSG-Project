@@ -65,7 +65,7 @@ CREATE TABLE source_file (
   profile_id        INT NOT NULL REFERENCES profile(profile_id) ON DELETE CASCADE,
   file_type         file_type NOT NULL,
   original_name     VARCHAR(255) NOT NULL,
-  file_hash         CHAR(64) NOT NULL UNIQUE,   -- SHA-256: same file twice = no duplicate
+  file_hash         CHAR(64) NOT NULL,          -- SHA-256: same file twice from the same candidate = no duplicate
   storage_path      TEXT NOT NULL,              -- raw file, never overwritten
   status            file_status NOT NULL DEFAULT 'uploaded',
   extraction_method VARCHAR(20),                -- text | ocr | parser | direct
@@ -74,7 +74,8 @@ CREATE TABLE source_file (
   "Num_Of_Retries"  INT NOT NULL DEFAULT 0,     -- processing retries used so far (quoted: name used by the Alembic migration)
   llm_response      JSONB,                      -- raw LLM output, for debugging
   uploaded_at       TIMESTAMP NOT NULL DEFAULT now(),
-  finished_at       TIMESTAMP
+  finished_at       TIMESTAMP,
+  CONSTRAINT uq_source_file_profile_hash UNIQUE (profile_id, file_hash)  -- FR-055: unique per candidate
 );
 
 -- ---------- LOOKUP TABLES ----------
