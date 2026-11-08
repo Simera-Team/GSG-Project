@@ -1,4 +1,5 @@
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.entities.source_file import SourceFile
@@ -41,6 +42,19 @@ class SourceFileRepository(ISourceFileRepository):
             return None
 
         return self._to_entity(model)
+
+    def list_by_profile_id(self, profile_id: int) -> list[SourceFile]:
+
+        stmt = (
+            select(SourceFileModel)
+            .where(SourceFileModel.profile_id == profile_id)
+            .order_by(
+                SourceFileModel.uploaded_at.desc(),
+                SourceFileModel.file_id.desc()
+            )
+        )
+
+        return [self._to_entity(model) for model in self.db.scalars(stmt)]
 
     @staticmethod
     def _to_entity(model: SourceFileModel) -> SourceFile:

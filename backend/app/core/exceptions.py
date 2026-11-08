@@ -18,6 +18,11 @@ class PermissionDeniedError(AppException):
         super().__init__(message)
 
 
+class SourceFileNotFoundError(AppException):
+    def __init__(self, message: str = "Upload not found"):
+        super().__init__(message)
+
+
 class InvalidFileTypeError(Exception):
     pass
 

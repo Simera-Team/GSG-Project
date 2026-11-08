@@ -13,3 +13,8 @@ class ISourceFileRepository(ABC):
     @abstractmethod
     def get_by_id(self, file_id: int) -> SourceFile | None:
         pass
+
+    @abstractmethod
+    def list_by_profile_id(self, profile_id: int) -> list[SourceFile]:
+        """Return the profile's files, newest first."""
+        pass

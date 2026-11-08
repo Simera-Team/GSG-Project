@@ -13,6 +13,18 @@ class ProfileRepository(IProfileRepository):
     def __init__(self, db: Session):
         self.db = db
 
+    def get_by_id(
+        self,
+        profile_id: int
+    ) -> Profile | None:
+
+        model = self.db.get(ProfileModel, profile_id)
+
+        if model is None:
+            return None
+
+        return self._to_entity(model)
+
     def get_by_user_id(
         self,
         user_id: int

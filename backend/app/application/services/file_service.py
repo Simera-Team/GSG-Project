@@ -5,15 +5,18 @@ import zipfile
 
 from dataclasses import dataclass
 from io import BytesIO
+from datetime import datetime
 from pathlib import Path
 
 import filetype
 
+from app.application.authorization import ensure_can_access
 from app.application.dto.RequestDto.upload_file_dto import UploadFileDTO
 from app.application.interfaces.file_storage import IFileStorage
 from app.application.interfaces.unit_of_work import IUnitOfWork
 
 from app.domain.entities.source_file import SourceFile
+from app.domain.entities.user import User
 from app.domain.interfaces.profile_repository import IProfileRepository
 from app.domain.interfaces.source_file_repository import ISourceFileRepository
 
@@ -22,7 +25,37 @@ from app.core.exceptions import (
     EmptyFileError,
     FileTooLargeError,
     InvalidFileContentError,
+    PermissionDeniedError,
+    SourceFileNotFoundError,
 )
+
+
+# Stored file status -> (state shown to the Candidate, plain-language reason).
+# FR-014 defines the four states; NFR-032 requires the wording to be plain.
+# error_message is deliberately not used: it can hold internal exception text.
+UPLOAD_STATES: dict[str, tuple[str, str]] = {
+    "uploaded": (
+        "processing",
+        "We received your file and it is waiting to be processed."
+    ),
+    "processing": (
+        "processing",
+        "We are reading your file and extracting your details."
+    ),
+    "done": (
+        "success",
+        "Your file was processed and your profile is up to date."
+    ),
+    "needs_review": (
+        "needs_review",
+        "Your file was processed, but a reviewer needs to check some details."
+    ),
+    "failed": (
+        "error",
+        "We could not process this file. "
+        "Please make sure it is readable and upload a corrected copy."
+    ),
+}
 
 
 @dataclass
@@ -41,6 +74,16 @@ class UploadCVResult:
     storage_path: str
     size: int
     file_hash: str
+
+
+@dataclass
+class UploadStatusResult:
+    file_id: int
+    filename: str
+    status: str
+    message: str
+    uploaded_at: datetime | None
+    finished_at: datetime | None
 
 
 class FileService:
@@ -227,3 +270,59 @@ class FileService:
             # Rollback all database changes
             self.unit_of_work.rollback()
             raise
+
+    def get_upload_status(
+        self,
+        file_id: int,
+        user: User
+    ) -> UploadStatusResult:
+
+        source_file = self.source_file_repository.get_by_id(file_id)
+
+        if source_file is None:
+            raise SourceFileNotFoundError()
+
+        owner = self.profile_repository.get_by_id(source_file.profile_id)
+
+        if owner is None:
+            raise SourceFileNotFoundError()
+
+        # FR-055: a denied file looks exactly like one that does not exist,
+        # so ids cannot be probed to learn about other candidates' uploads.
+        try:
+            ensure_can_access(user, owner.user_id)
+        except PermissionDeniedError as exc:
+            raise SourceFileNotFoundError() from exc
+
+        return self._to_upload_status(source_file)
+
+    def list_upload_statuses(
+        self,
+        user_id: int
+    ) -> list[UploadStatusResult]:
+
+        profile = self.profile_repository.get_by_user_id(user_id)
+
+        if profile is None or profile.profile_id is None:
+            return []
+
+        return [
+            self._to_upload_status(source_file)
+            for source_file in self.source_file_repository.list_by_profile_id(
+                profile.profile_id
+            )
+        ]
+
+    @staticmethod
+    def _to_upload_status(source_file: SourceFile) -> UploadStatusResult:
+
+        state, message = UPLOAD_STATES[source_file.status]
+
+        return UploadStatusResult(
+            file_id=source_file.file_id,
+            filename=source_file.original_name,
+            status=state,
+            message=message,
+            uploaded_at=source_file.uploaded_at,
+            finished_at=source_file.finished_at
+        )
