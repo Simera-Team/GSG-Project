@@ -13,8 +13,7 @@ from fastapi import (
 from app.application.dto.RequestDto.upload_file_dto import UploadFileDTO
 from app.application.services.file_service import FileService
 
-from app.core.dependencies import get_file_service
-from app.core.auth_dependencies import get_current_user_id
+from app.core.dependencies import get_file_service, require_permission
 
 from app.core.exceptions import (
     InvalidFileTypeError,
@@ -22,6 +21,9 @@ from app.core.exceptions import (
     FileTooLargeError,
     InvalidFileContentError,
 )
+
+from app.domain.entities.user import User
+from app.domain.permissions import Permission
 
 
 router = APIRouter(
@@ -43,9 +45,9 @@ async def upload_cv(
         FileService,
         Depends(get_file_service)
     ],
-    user_id: Annotated[
-        int,
-        Depends(get_current_user_id)
+    user: Annotated[
+        User,
+        Depends(require_permission(Permission.SOURCE_UPLOAD))
     ]
 ):
     try:
@@ -63,7 +65,7 @@ async def upload_cv(
         # Step 3: Upload CV using authenticated user ID
         result = await file_service.upload_cv(
             file=upload_dto,
-            user_id=user_id
+            user_id=user.user_id
         )
 
         # Step 4: Return result

@@ -45,9 +45,19 @@ def create_access_token(user_id: int) -> str:
 
 
 def decode_access_token(token: str) -> dict:
-    return jwt.decode(
+    """Decode and validate an access token.
+
+    Raises jwt.InvalidTokenError if the signature, expiry or claims are
+    invalid, or if the token is not an access token.
+    """
+    payload = jwt.decode(
         token,
         settings.JWT_SECRET_KEY,
         algorithms=[settings.JWT_ALGORITHM],
         options={"require": ["sub", "iat", "exp"]}
     )
+
+    if payload.get("type") != "access":
+        raise jwt.InvalidTokenError("Not an access token")
+
+    return payload
