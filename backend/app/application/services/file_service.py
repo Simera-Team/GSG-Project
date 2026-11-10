@@ -2,11 +2,11 @@
 import hashlib
 import json
 import zipfile
-
+import logging
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-
+from app.application.interfaces.message_publisher import IMessagePublisher
 import filetype
 
 from app.application.dto.RequestDto.upload_file_dto import UploadFileDTO
@@ -24,6 +24,7 @@ from app.core.exceptions import (
     InvalidFileContentError,
 )
 
+logger = logging.getLogger(__name__)
 
 @dataclass
 class ValidatedFile:
@@ -53,12 +54,14 @@ class FileService:
         storage: IFileStorage,
         source_file_repository: ISourceFileRepository,
         profile_repository: IProfileRepository,
-        unit_of_work: IUnitOfWork
+        unit_of_work: IUnitOfWork,
+        message_publisher: IMessagePublisher
     ):
         self.storage = storage
         self.source_file_repository = source_file_repository
         self.profile_repository = profile_repository
         self.unit_of_work = unit_of_work
+        self.message_publisher = message_publisher
 
     def validate_file(
         self,
@@ -211,19 +214,36 @@ class FileService:
                     "File ID was not generated"
                 )
 
+           
             # Step 6: Commit transaction
             self.unit_of_work.commit()
 
-            # Step 7: Return result
-            return UploadCVResult(
-                file_id=saved_file.file_id,
-                filename=validated_file.filename,
-                storage_path=storage_path,
-                size=validated_file.size,
-                file_hash=validated_file.file_hash
-            )
-
         except Exception:
-            # Rollback all database changes
-            self.unit_of_work.rollback()
+            try:
+                self.unit_of_work.rollback()
+            finally:
+                try:
+                    self.storage.delete(storage_path)
+                except Exception:
+                    logger.exception(
+                        "Failed to delete file after upload failure: %s",
+                        storage_path
+                    )
             raise
+
+        # Step 7: Publish message after successful commit
+        await self.message_publisher.publish_cv(
+            saved_file.file_id
+        )
+
+        # Step 8: Return result
+        return UploadCVResult(
+            file_id=saved_file.file_id,
+            filename=validated_file.filename,
+            storage_path=storage_path,
+            size=validated_file.size,
+            file_hash=validated_file.file_hash
+        )
+
+      
+      

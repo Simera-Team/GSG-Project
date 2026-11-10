@@ -10,6 +10,8 @@ from fastapi import (
     status
 )
 
+from app.presentation.schemas.file_schema import UploadCVResponse
+
 from app.application.dto.RequestDto.upload_file_dto import UploadFileDTO
 from app.application.services.file_service import FileService
 
@@ -34,7 +36,8 @@ router = APIRouter(
 
 @router.post(
     "/upload",
-    status_code=status.HTTP_201_CREATED
+    response_model=UploadCVResponse,
+    status_code=status.HTTP_202_ACCEPTED
 )
 async def upload_cv(
     file: Annotated[
@@ -68,14 +71,14 @@ async def upload_cv(
             user_id=user.user_id
         )
 
-        # Step 4: Return result
-        return {
-            "file_id": result.file_id,
-            "filename": result.filename,
-            "size": result.size,
-            "file_hash": result.file_hash,
-            "message": "CV uploaded successfully"
-        }
+        # Step 4: Return response
+        return UploadCVResponse(
+            file_id=result.file_id,
+            filename=result.filename,
+            size=result.size,
+            status="uploaded",
+            message="CV uploaded successfully and queued for processing"
+        )
 
     except FileTooLargeError as exc:
         raise HTTPException(
