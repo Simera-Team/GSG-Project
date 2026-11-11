@@ -11,6 +11,7 @@ from sqlalchemy import (
     Enum,
     JSON,
     CHAR,
+    UniqueConstraint,
     func
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -21,6 +22,14 @@ from app.infrastructure.persistence.db.base import Base
 
 class SourceFileModel(Base):
     __tablename__ = "source_file"
+    __table_args__ = (
+        # FR-011 / FR-055: a hash is unique per candidate, not system-wide
+        UniqueConstraint(
+            "profile_id",
+            "file_hash",
+            name="uq_source_file_profile_hash"
+        ),
+    )
 
     file_id: Mapped[int] = mapped_column(
         Integer,

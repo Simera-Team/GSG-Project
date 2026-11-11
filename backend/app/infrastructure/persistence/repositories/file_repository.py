@@ -1,5 +1,9 @@
 
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
+from app.core.exceptions import DuplicateSourceFileHashError
 
 from app.domain.entities.source_file import SourceFile
 from app.domain.interfaces.source_file_repository import ISourceFileRepository
@@ -29,13 +33,39 @@ class SourceFileRepository(ISourceFileRepository):
         )
 
         self.db.add(model)
-        self.db.flush()
+
+        try:
+            self.db.flush()
+        except IntegrityError as exc:
+            if "uq_source_file_profile_hash" in str(exc.orig):
+                raise DuplicateSourceFileHashError(
+                    "Source file hash already exists for this profile"
+                ) from exc
+            raise
 
         return self._to_entity(model)
 
     def get_by_id(self, file_id: int) -> SourceFile | None:
 
         model = self.db.get(SourceFileModel, file_id)
+
+        if model is None:
+            return None
+
+        return self._to_entity(model)
+
+    def get_by_profile_and_hash(
+        self,
+        profile_id: int,
+        file_hash: str
+    ) -> SourceFile | None:
+
+        stmt = select(SourceFileModel).where(
+            SourceFileModel.profile_id == profile_id,
+            SourceFileModel.file_hash == file_hash
+        )
+
+        model = self.db.scalar(stmt)
 
         if model is None:
             return None

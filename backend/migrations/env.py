@@ -16,6 +16,7 @@ from app.infrastructure.persistence.db.base import Base
 from app.infrastructure.persistence.models.user_model import UserModel
 from app.infrastructure.persistence.models.profile_model import ProfileModel
 from app.infrastructure.persistence.models.country_model import CountryModel
+from app.infrastructure.persistence.models.source_file_model import SourceFileModel
 
 
 # Alembic Config
