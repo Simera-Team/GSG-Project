@@ -9,4 +9,5 @@ pydantic[email]
 pwdlib[argon2]
 PyJWT
 filetype
+aio-pika
 langchain-core

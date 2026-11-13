@@ -57,6 +57,14 @@ class UserRepository(IUserRepository):
 
         return self._to_entity(user_model)
 
+    def get_by_id(self, user_id: int) -> User | None:
+        user_model = self.db.get(UserModel, user_id)
+
+        if user_model is None:
+            return None
+
+        return self._to_entity(user_model)
+
     @staticmethod
     def _to_entity(model: UserModel) -> User:
         return User(

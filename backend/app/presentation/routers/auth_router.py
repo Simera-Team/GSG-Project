@@ -10,7 +10,7 @@ from app.application.dto.RequestDto.login_dto import LoginRequest
 from app.application.dto.ResponseDto.login_response import LoginResponse
 
 from app.application.services.auth_service import AuthService
-from app.core.dependencies import get_auth_service
+from app.core.dependencies import CurrentUser, get_auth_service
 from app.core.exceptions import (
     EmailAlreadyExistsError,
     InvalidCredentialsError
@@ -66,3 +66,12 @@ def register(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc)
         ) from exc
+
+
+@router.get(
+    "/me",
+    response_model=RegisterResponse,
+    status_code=status.HTTP_200_OK
+)
+def me(user: CurrentUser):
+    return user

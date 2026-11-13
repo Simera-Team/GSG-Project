@@ -20,8 +20,19 @@ dependencies = [
     "pwdlib[argon2]",
     "PyJWT",
     "filetype",
+    "aio-pika",
     "langchain-core"
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "httpx2"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.setuptools.packages.find]
 where = ["."]

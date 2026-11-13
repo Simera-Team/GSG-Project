@@ -10,11 +10,12 @@ from fastapi import (
     status
 )
 
+from app.presentation.schemas.file_schema import UploadCVResponse
+
 from app.application.dto.RequestDto.upload_file_dto import UploadFileDTO
 from app.application.services.file_service import FileService
 
-from app.core.dependencies import get_file_service
-from app.core.auth_dependencies import get_current_user_id
+from app.core.dependencies import get_file_service, require_permission
 
 from app.core.exceptions import (
     InvalidFileTypeError,
@@ -22,6 +23,9 @@ from app.core.exceptions import (
     FileTooLargeError,
     InvalidFileContentError,
 )
+
+from app.domain.entities.user import User
+from app.domain.permissions import Permission
 
 
 router = APIRouter(
@@ -32,7 +36,8 @@ router = APIRouter(
 
 @router.post(
     "/upload",
-    status_code=status.HTTP_201_CREATED
+    response_model=UploadCVResponse,
+    status_code=status.HTTP_202_ACCEPTED
 )
 async def upload_cv(
     file: Annotated[
@@ -43,9 +48,9 @@ async def upload_cv(
         FileService,
         Depends(get_file_service)
     ],
-    user_id: Annotated[
-        int,
-        Depends(get_current_user_id)
+    user: Annotated[
+        User,
+        Depends(require_permission(Permission.SOURCE_UPLOAD))
     ]
 ):
     try:
@@ -63,17 +68,17 @@ async def upload_cv(
         # Step 3: Upload CV using authenticated user ID
         result = await file_service.upload_cv(
             file=upload_dto,
-            user_id=user_id
+            user_id=user.user_id
         )
 
-        # Step 4: Return result
-        return {
-            "file_id": result.file_id,
-            "filename": result.filename,
-            "size": result.size,
-            "file_hash": result.file_hash,
-            "message": "CV uploaded successfully"
-        }
+        # Step 4: Return response
+        return UploadCVResponse(
+            file_id=result.file_id,
+            filename=result.filename,
+            size=result.size,
+            status="uploaded",
+            message="CV uploaded successfully and queued for processing"
+        )
 
     except FileTooLargeError as exc:
         raise HTTPException(
