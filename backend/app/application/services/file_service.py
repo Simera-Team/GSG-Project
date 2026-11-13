@@ -42,6 +42,7 @@ class UploadCVResult:
     storage_path: str
     size: int
     file_hash: str
+    duplicate: bool = False      # True: this candidate already uploaded this exact file
 
 
 class FileService:
@@ -176,22 +177,40 @@ class FileService:
         # Step 1: Validate file
         validated_file = self.validate_file(file)
 
-        # Step 2: Save file to storage
+        # Step 2: Get or create user profile
+        profile = self.profile_repository.get_or_create_by_user_id(
+            user_id
+        )
+
+        if profile.profile_id is None:
+            raise RuntimeError(
+                "Profile ID was not generated"
+            )
+
+        # Step 2b: Same file from the same candidate again -> no new job
+        # (FR-012). Only this candidate's files are checked (FR-055).
+        existing = self.source_file_repository.get_by_profile_and_hash(
+            profile.profile_id,
+            validated_file.file_hash
+        )
+
+        if existing is not None:
+            return UploadCVResult(
+                file_id=existing.file_id,
+                filename=existing.original_name,
+                storage_path=existing.storage_path,
+                size=validated_file.size,
+                file_hash=validated_file.file_hash,
+                duplicate=True
+            )
+
+        # Step 3: Save file to storage
         storage_path = self.storage.save(
             validated_file.content,
             validated_file.extension
         )
 
         try:
-            # Step 3: Get or create user profile
-            profile = self.profile_repository.get_or_create_by_user_id(
-                user_id
-            )
-
-            if profile.profile_id is None:
-                raise RuntimeError(
-                    "Profile ID was not generated"
-                )
 
             # Step 4: Create SourceFile entity
             source_file = SourceFile(

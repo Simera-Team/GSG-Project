@@ -187,7 +187,7 @@ def _upload(client, headers=None):
 def test_candidate_can_upload_cv_as_themselves(client, file_service, make_user):
     candidate = make_user(UserRole.CANDIDATE)
     response = _upload(client, auth_header(candidate))
-    assert response.status_code == 201
+    assert response.status_code == 202      # accepted and queued for processing (FR-013)
     assert file_service.uploaded_for == [candidate.user_id]
 
 
@@ -204,6 +204,7 @@ def test_upload_requires_login(client, file_service):
 
 
 PUBLIC_ROUTES = {
+    "/",                # redirects to the Swagger page, returns no data
     "/health",
     "/health/db",
     "/api/v1/auth/register",

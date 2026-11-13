@@ -12,7 +12,7 @@ class RabbitMQPublisher(IMessagePublisher):
     def __init__(self, rabbitmq_url: str):
         self.rabbitmq_url = rabbitmq_url
 
-    async def publish_cv(self, file_id: int) -> None:
+    async def publish_cv(self, file_id: int, trigger: str = "first_run") -> None:
         connection = await aio_pika.connect_robust(
             self.rabbitmq_url
         )
@@ -29,7 +29,8 @@ class RabbitMQPublisher(IMessagePublisher):
 
             message = Message(
                 body=json.dumps({
-                    "file_id": file_id
+                    "file_id": file_id,
+                    "trigger": trigger
                 }).encode("utf-8"),
                 delivery_mode=DeliveryMode.PERSISTENT,
                 content_type="application/json"

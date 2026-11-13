@@ -1,4 +1,5 @@
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.entities.source_file import SourceFile
@@ -41,6 +42,20 @@ class SourceFileRepository(ISourceFileRepository):
             return None
 
         return self._to_entity(model)
+
+    def get_by_profile_and_hash(self, profile_id: int, file_hash: str) -> SourceFile | None:
+
+        model = self.db.scalar(
+            select(SourceFileModel)
+            .where(
+                SourceFileModel.profile_id == profile_id,
+                SourceFileModel.file_hash == file_hash
+            )
+            .order_by(SourceFileModel.file_id)
+            .limit(1)
+        )
+
+        return self._to_entity(model) if model is not None else None
 
     @staticmethod
     def _to_entity(model: SourceFileModel) -> SourceFile:

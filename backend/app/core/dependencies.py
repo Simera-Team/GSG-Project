@@ -203,3 +203,36 @@ def get_file_service(
         unit_of_work=unit_of_work,
         message_publisher=message_publisher
     )
+
+
+# ==========================================
+# Review Service Dependency (review queue API)
+# ==========================================
+
+def get_review_service(
+    db: Annotated[Session, Depends(get_db)]
+) -> "ReviewService":
+    from app.application.services.review_service import ReviewService
+    from app.infrastructure.persistence.repositories.catalog_repository import SqlCatalogRepository
+    from app.infrastructure.persistence.repositories.processing_repository import (
+        SqlProcessingRepository,
+    )
+    from app.infrastructure.persistence.repositories.review_repository import SqlReviewRepository
+
+    return ReviewService(
+        reviews=SqlReviewRepository(db),
+        processing=SqlProcessingRepository(db),
+        catalogs=SqlCatalogRepository(db),
+        unit_of_work=SqlAlchemyUnitOfWork(db),
+    )
+
+
+# ==========================================
+# Read Repository Dependency (profile, file status, admin views)
+# ==========================================
+
+def get_read_repository(
+    db: Annotated[Session, Depends(get_db)]
+):
+    from app.infrastructure.persistence.repositories.read_repository import SqlReadRepository
+    return SqlReadRepository(db)
