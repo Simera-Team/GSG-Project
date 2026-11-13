@@ -5,16 +5,18 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 
 from app.application.interfaces.read_repository import IReadRepository, ProfileView
-from app.core.auth_dependencies import get_current_user_id, require_reviewer
-from app.core.dependencies import get_read_repository
+from app.core.dependencies import get_read_repository, require_permission
 from app.domain.entities.user import User
+from app.domain.permissions import Permission
 from app.presentation.schemas.file_schema import FileOut
 from app.presentation.schemas.profile_schema import ChangeListOut, ChangeOut, ProfileOut
 
 router = APIRouter(prefix="/profile", tags=["Profile"])
 
 Reader = Annotated[IReadRepository, Depends(get_read_repository)]
-Reviewer = Annotated[User, Depends(require_reviewer)]
+Candidate = Annotated[User, Depends(require_permission(Permission.PROFILE_VIEW_OWN))]
+AnyCandidateData = Annotated[
+    User, Depends(require_permission(Permission.CANDIDATE_DATA_ACCESS_ANY))]
 ProfileId = Annotated[int, Path(ge=1)]
 
 
@@ -30,11 +32,11 @@ def _out(view: ProfileView) -> ProfileOut:
             responses={401: {"description": "Not logged in"},
                        404: {"description": "Nothing uploaded yet"}},
             summary="My unified profile")
-def my_profile(user_id: Annotated[int, Depends(get_current_user_id)], reader: Reader):
+def my_profile(user: Candidate, reader: Reader):
     """Personal info, experience, education, skills, certifications, projects,
     languages and links, merged from all your uploads (FR-004). Values still
     waiting for a reviewer are not included yet (FR-040)."""
-    profile_id = reader.profile_id_for_user(user_id)
+    profile_id = reader.profile_id_for_user(user.user_id)
     view = reader.get_profile(profile_id) if profile_id else None
     if view is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No profile yet: upload a CV first")
@@ -43,10 +45,10 @@ def my_profile(user_id: Annotated[int, Depends(get_current_user_id)], reader: Re
 
 @router.get("/{profile_id}", response_model=ProfileOut,
             responses={401: {"description": "Not logged in"},
-                       403: {"description": "Not a reviewer or administrator"},
+                       403: {"description": "Not an administrator"},
                        404: {"description": "No such profile"}},
-            summary="A candidate's profile (reviewers, administrators)")
-def get_profile(profile_id: ProfileId, reviewer: Reviewer, reader: Reader):
+            summary="A candidate's profile (administrators)")
+def get_profile(profile_id: ProfileId, user: AnyCandidateData, reader: Reader):
     view = reader.get_profile(profile_id)
     if view is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Profile not found")
@@ -55,10 +57,10 @@ def get_profile(profile_id: ProfileId, reviewer: Reviewer, reader: Reader):
 
 @router.get("/{profile_id}/history", response_model=ChangeListOut,
             responses={401: {"description": "Not logged in"},
-                       403: {"description": "Not a reviewer or administrator"},
+                       403: {"description": "Not an administrator"},
                        404: {"description": "No such profile"}},
-            summary="Change history of a profile (reviewers, administrators)")
-def profile_history(profile_id: ProfileId, reviewer: Reviewer, reader: Reader,
+            summary="Change history of a profile (administrators)")
+def profile_history(profile_id: ProfileId, user: AnyCandidateData, reader: Reader,
                     limit: Annotated[int, Query(ge=1, le=200)] = 100,
                     offset: Annotated[int, Query(ge=0)] = 0):
     """Every change with its old and new value, who made it (or 'system'), why,

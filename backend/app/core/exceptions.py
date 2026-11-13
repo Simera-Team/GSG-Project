@@ -45,6 +45,11 @@ class InvalidCredentialsError(AppException):
         super().__init__(message)
 
 
+class PermissionDeniedError(AppException):
+    def __init__(self, message: str = "You do not have access to this resource"):
+        super().__init__(message)
+
+
 class InvalidFileTypeError(Exception):
     pass
 

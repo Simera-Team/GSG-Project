@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     DATABASE_URL: str
+    RABBITMQ_URL: str
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
@@ -15,9 +16,6 @@ class Settings(BaseSettings):
     LLM_THINKING_LEVEL: str = "medium"        # minimal | low | medium | high
     LLM_MAX_ATTEMPTS: int = 3                 # FR-023
     LLM_RETRY_BASE_SECONDS: float = 2.0       # waits 2s, then 4s
-
-    # Process uploads automatically after the response (until the RabbitMQ worker exists)
-    PROCESS_UPLOADS_AUTOMATICALLY: bool = True
 
     # OCR threads: on laptops with fast + slow cores, 4 measured ~40% faster than all cores
     OCR_THREADS: int = 4

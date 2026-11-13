@@ -5,9 +5,10 @@ from app.application.use_cases.process_cv import ProcessCVUseCase
 
 def build_process_cv_use_case(db: Session, settings) -> ProcessCVUseCase:
     """Wire the use case with its database, file reader and LLM client.
-    Used by the worker / scripts; tests build it with fakes instead."""
+    Used by the CV worker and scripts; tests build it with fakes instead."""
     from app.infrastructure.ai.ai_client_factory import create_ai_client
     from app.infrastructure.file_processing.document_reader import StoredDocumentReader
+    from app.infrastructure.storage.local_file_storage import LocalFileStorage
     from app.infrastructure.persistence.repositories.catalog_repository import SqlCatalogRepository
     from app.infrastructure.persistence.repositories.processing_repository import (
         SqlProcessingRepository,
@@ -17,7 +18,7 @@ def build_process_cv_use_case(db: Session, settings) -> ProcessCVUseCase:
     return ProcessCVUseCase(
         repository=SqlProcessingRepository(db),
         catalogs=SqlCatalogRepository(db),
-        reader=StoredDocumentReader(),
+        reader=StoredDocumentReader(LocalFileStorage()),
         ai_client=create_ai_client(settings),
         unit_of_work=SqlAlchemyUnitOfWork(db),
         confidence_threshold=settings.REVIEW_CONFIDENCE_THRESHOLD,

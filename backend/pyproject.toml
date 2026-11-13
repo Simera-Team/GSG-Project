@@ -24,11 +24,19 @@ dependencies = [
     "python-docx",
     "rapidocr",
     "onnxruntime",
-    "google-genai"
+    "google-genai",
+    "aio-pika"
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = [
+    "pytest",
+    "httpx2"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.setuptools.packages.find]
 where = ["."]

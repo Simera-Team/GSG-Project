@@ -6,13 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field
 FileStatus = Literal["uploaded", "processing", "done", "needs_review", "failed"]
 
 
-class UploadOut(BaseModel):
+class UploadCVResponse(BaseModel):
     file_id: int
     filename: str
     size: int
-    file_hash: str
-    status: FileStatus
-    duplicate: bool = Field(description="True when you already uploaded this exact file: "
+    status: str = Field(description="uploaded (queued for processing) or duplicate")
+    duplicate: bool = Field(default=False,
+                            description="True when you already uploaded this exact file: "
                                         "nothing new is created or processed (FR-012)")
     message: str
 

@@ -1,7 +1,7 @@
 """Review queue API (FR-041 - FR-044, FR-062, FR-066).
 
-Only reviewers and administrators can use it (FR-003); every request checks
-the role in the database (NFR-016).
+Access follows the permission matrix in app/domain/permissions.py (FR-003):
+REVIEW_QUEUE to read the queue, REVIEW_RESOLVE to decide items.
 """
 
 from typing import Annotated, Literal
@@ -9,10 +9,10 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 
 from app.application.services.review_service import ReviewService
-from app.core.auth_dependencies import require_reviewer
-from app.core.dependencies import get_review_service
+from app.core.dependencies import get_review_service, require_permission
 from app.core.exceptions import ReviewInputError, ReviewNotFoundError, ReviewStateError
 from app.domain.entities.user import User
+from app.domain.permissions import Permission
 from app.presentation.schemas.review_schema import (
     CandidateRequestOut,
     ResolveRequest,
@@ -22,7 +22,8 @@ from app.presentation.schemas.review_schema import (
 
 router = APIRouter(prefix="/review", tags=["Review"])
 
-Reviewer = Annotated[User, Depends(require_reviewer)]
+Reviewer = Annotated[User, Depends(require_permission(Permission.REVIEW_QUEUE))]
+Resolver = Annotated[User, Depends(require_permission(Permission.REVIEW_RESOLVE))]
 Service = Annotated[ReviewService, Depends(get_review_service)]
 ReviewId = Annotated[int, Path(ge=1)]
 
@@ -81,7 +82,7 @@ def get_item(review_id: ReviewId, reviewer: Reviewer, service: Service):
                         409: {"description": "Already resolved"},
                         422: {"description": "Decision not valid for this field"}},
              summary="Decide a review item")
-def resolve(review_id: ReviewId, body: ResolveRequest, reviewer: Reviewer, service: Service):
+def resolve(review_id: ReviewId, body: ResolveRequest, reviewer: Resolver, service: Service):
     """Pick an option or type a corrected value; the decision is saved with the
     reviewer and time (FR-043, FR-066), applied to the live profile, and logged in
     the profile change history. For an unknown skill, picking it approves it as a
@@ -98,7 +99,7 @@ def resolve(review_id: ReviewId, body: ResolveRequest, reviewer: Reviewer, servi
              responses={**ERRORS, 404: {"description": "No such item"},
                         409: {"description": "Already resolved"}},
              summary="Ask the candidate for clarification")
-def request_candidate(review_id: ReviewId, reviewer: Reviewer, service: Service):
+def request_candidate(review_id: ReviewId, reviewer: Resolver, service: Service):
     """Leave the item unresolved and record that the candidate was asked and when
     (FR-044). The live profile is not changed. No e-mail is sent by the server
     yet: the reviewer sends the suggested message to the returned address."""
