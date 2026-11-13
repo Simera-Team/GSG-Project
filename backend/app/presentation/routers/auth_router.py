@@ -2,6 +2,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 
 from app.application.dto.RequestDto.register_dto import RegisterRequest
 from app.application.dto.ResponseDto.user_response import RegisterResponse
@@ -65,4 +66,30 @@ def register(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc)
+        ) from exc
+
+
+@router.post(
+    "/token",
+    response_model=LoginResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Login for Swagger's Authorize button",
+)
+def login_form(
+    form: Annotated[OAuth2PasswordRequestForm, Depends()],
+    service: Annotated[
+        AuthService,
+        Depends(get_auth_service)
+    ]
+):
+    """Same login as /auth/login, but takes the form fields Swagger sends
+    (put the e-mail in `username`). Apps should keep using /auth/login."""
+    try:
+        return service.login(LoginRequest(email=form.username, password=form.password))
+
+    except (InvalidCredentialsError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+            headers={"WWW-Authenticate": "Bearer"}
         ) from exc

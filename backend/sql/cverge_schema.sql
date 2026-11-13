@@ -3,6 +3,11 @@ CREATE TYPE user_role   AS ENUM ('candidate', 'reviewer', 'administrator');  -- 
 CREATE TYPE file_type   AS ENUM ('pdf', 'docx', 'md', 'json');  -- file extension without the dot
 CREATE TYPE file_status AS ENUM ('uploaded', 'processing', 'done', 'failed', 'needs_review');
 CREATE TYPE link_type   AS ENUM ('linkedin', 'github', 'portfolio', 'website', 'other');
+CREATE TYPE attempt_trigger AS ENUM ('first_run', 'auto_retry', 'admin_rerun');  -- FR-058
+CREATE TYPE attempt_outcome AS ENUM ('valid', 'invalid', 'error');
+
+-- Dates in profile records are TEXT 'YYYY' or 'YYYY-MM' (never an invented day, FR-028):
+--   CHECK (col ~ '^\d{4}(-(0[1-9]|1[0-2]))?$')
 
 -- ---------- SYSTEM TABLES ----------
 CREATE TABLE app_user (
@@ -90,22 +95,32 @@ CREATE TABLE skill_alias (
 );
 
 -- ---------- CV SECTIONS (many per profile) ----------
+-- Generated from extracted_field rows, never edited directly. field_ids lists
+-- the field records that produced each row (FR-063).
 CREATE TABLE profile_skill (
-  profile_id INT NOT NULL REFERENCES profile(profile_id) ON DELETE CASCADE,
-  skill_id   INT NOT NULL REFERENCES skill(skill_id),
-  level      INT CHECK (level BETWEEN 1 AND 5),
-  confidence REAL CHECK (confidence BETWEEN 0 AND 1),
+  profile_id      INT NOT NULL REFERENCES profile(profile_id) ON DELETE CASCADE,
+  skill_id        INT NOT NULL REFERENCES skill(skill_id),
+  level           INT CHECK (level BETWEEN 1 AND 5),
+  confidence      REAL CHECK (confidence BETWEEN 0 AND 1),
+  verified        BOOLEAN NOT NULL DEFAULT FALSE,   -- TRUE only for vetted skills (FR-057)
+  source_file_ids INT[] NOT NULL DEFAULT '{}',      -- files the skill came from (FR-057)
+  field_ids       INT[] NOT NULL DEFAULT '{}',
   PRIMARY KEY (profile_id, skill_id)
 );
 
 CREATE TABLE work_experience (
-  exp_id      SERIAL PRIMARY KEY,
-  profile_id  INT NOT NULL REFERENCES profile(profile_id) ON DELETE CASCADE,
-  company     VARCHAR(255),
-  title       VARCHAR(255),
-  start_date  DATE,
-  end_date    DATE,                             -- NULL = current job
-  description TEXT
+  exp_id            SERIAL PRIMARY KEY,
+  profile_id        INT NOT NULL REFERENCES profile(profile_id) ON DELETE CASCADE,
+  company           VARCHAR(255),
+  title             VARCHAR(255),
+  location          VARCHAR(255),
+  start_date        VARCHAR(7) CHECK (start_date ~ '^\d{4}(-(0[1-9]|1[0-2]))?$'),
+  end_date          VARCHAR(7) CHECK (end_date   ~ '^\d{4}(-(0[1-9]|1[0-2]))?$'),
+  -- current = ongoing job; unknown = end date missing in the source (FR-028)
+  employment_status VARCHAR(10) NOT NULL DEFAULT 'unknown'
+                    CHECK (employment_status IN ('current', 'ended', 'unknown')),
+  description       TEXT,
+  field_ids         INT[] NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE project (
@@ -114,7 +129,8 @@ CREATE TABLE project (
   name        VARCHAR(255) NOT NULL,
   description TEXT,
   url         TEXT,
-  tech_stack  TEXT[]                            -- e.g. {'Node.js','PostgreSQL'}
+  tech_stack  TEXT[] NOT NULL DEFAULT '{}',     -- e.g. {'Node.js','PostgreSQL'}
+  field_ids   INT[] NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE education (
@@ -123,15 +139,17 @@ CREATE TABLE education (
   institution VARCHAR(255),
   degree      VARCHAR(255),
   field       VARCHAR(255),
-  start_date  DATE,
-  end_date    DATE
+  start_date  VARCHAR(7) CHECK (start_date ~ '^\d{4}(-(0[1-9]|1[0-2]))?$'),
+  end_date    VARCHAR(7) CHECK (end_date   ~ '^\d{4}(-(0[1-9]|1[0-2]))?$'),
+  field_ids   INT[] NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE language (                         -- spoken languages (not programming)
   language_id SERIAL PRIMARY KEY,
   profile_id  INT NOT NULL REFERENCES profile(profile_id) ON DELETE CASCADE,
   name        VARCHAR(50) NOT NULL,
-  proficiency VARCHAR(30),                      -- native | fluent | intermediate | basic
+  proficiency VARCHAR(30) CHECK (proficiency IN ('native', 'fluent', 'intermediate', 'basic')),
+  field_ids   INT[] NOT NULL DEFAULT '{}',
   UNIQUE (profile_id, name)
 );
 
@@ -140,6 +158,7 @@ CREATE TABLE profile_link (                     -- LinkedIn, GitHub, portfolio..
   profile_id INT NOT NULL REFERENCES profile(profile_id) ON DELETE CASCADE,
   type       link_type NOT NULL,
   url        TEXT NOT NULL,
+  field_ids  INT[] NOT NULL DEFAULT '{}',
   UNIQUE (profile_id, url)
 );
 
@@ -148,21 +167,65 @@ CREATE TABLE certification (
   profile_id INT NOT NULL REFERENCES profile(profile_id) ON DELETE CASCADE,
   name       VARCHAR(255) NOT NULL,
   issuer     VARCHAR(255),
-  issue_date DATE,
-  url        TEXT
+  issue_date VARCHAR(7) CHECK (issue_date ~ '^\d{4}(-(0[1-9]|1[0-2]))?$'),
+  url        TEXT,
+  field_ids  INT[] NOT NULL DEFAULT '{}'
+);
+
+-- ---------- AUDIT TRAIL: every processing try ----------
+-- One row per LLM attempt, including failed ones (FR-058). Insert-only (NFR-024).
+CREATE TABLE processing_attempt (
+  attempt_id           SERIAL PRIMARY KEY,
+  file_id              INT NOT NULL REFERENCES source_file(file_id) ON DELETE CASCADE,
+  attempt_number       INT NOT NULL,              -- continues across re-runs of the file
+  trigger              attempt_trigger NOT NULL,  -- admin_rerun does not count toward the 3-try limit
+  outcome              attempt_outcome NOT NULL,
+  provider             VARCHAR(50)  NOT NULL,     -- e.g. gemini
+  model_version        VARCHAR(100) NOT NULL,     -- model that actually answered (NFR-035)
+  llm_response         TEXT,                      -- raw answer, exactly as received
+  validation_result    JSONB,                     -- is_valid, errors, dropped_fields
+  error_message        TEXT,
+  confidence_threshold REAL CHECK (confidence_threshold BETWEEN 0 AND 1),  -- limit used (FR-067)
+  started_at           TIMESTAMPTZ NOT NULL,
+  finished_at          TIMESTAMPTZ NOT NULL,
+  CONSTRAINT uq_attempt_file_number UNIQUE (file_id, attempt_number)
 );
 
 -- ---------- AUDIT TRAIL: where each value came from ----------
--- Every value from every file, with its confidence and the rule used.
+-- Every value from every file, with its entity, evidence, confidence and the
+-- rule used (FR-035, FR-060, FR-065). Insert-only: a re-run adds new rows; the
+-- profile is built from the rows of each file's latest valid attempt.
 CREATE TABLE extracted_field (
-  field_id    SERIAL PRIMARY KEY,
+  field_id        SERIAL PRIMARY KEY,
+  file_id         INT NOT NULL REFERENCES source_file(file_id) ON DELETE CASCADE,
+  attempt_id      INT REFERENCES processing_attempt(attempt_id) ON DELETE CASCADE,
+  entity          VARCHAR(100) NOT NULL,        -- e.g. personal_info, work_experience[2]
+  entity_type     VARCHAR(50)  NOT NULL,        -- e.g. work_experience
+  field_name      VARCHAR(100) NOT NULL,        -- e.g. end_date
+  raw_value       JSONB,                        -- as the LLM returned it
+  value           JSONB,                        -- after normalisation (dates, country, skill)
+  confidence      REAL CHECK (confidence BETWEEN 0 AND 1),
+  evidence        TEXT,                         -- exact snippet from the source text
+  page            INT CHECK (page IS NULL OR page >= 1),
+  evidence_status VARCHAR(20) NOT NULL,         -- verified | verified_fuzzy | missing | not_found | not_required
+  rule            VARCHAR(100),                 -- e.g. llm_extraction, date_normalized, alias_table
+  review_status   VARCHAR(20) NOT NULL DEFAULT 'accepted'
+                  CHECK (review_status IN ('accepted', 'needs_review')),
+  review_reasons  VARCHAR(50)[] NOT NULL DEFAULT '{}',  -- e.g. {low_confidence, unknown_skill}
+  is_winner       BOOLEAN DEFAULT FALSE,
+  created_at      TIMESTAMP DEFAULT now()
+);
+
+-- ---------- VETTING RESULTS (FR-056) ----------
+-- Filled from an admin-uploaded JSON file; the parser waits for the JSON format (flag 7).
+CREATE TABLE vetting_record (
+  vetting_id  SERIAL PRIMARY KEY,
+  profile_id  INT NOT NULL REFERENCES profile(profile_id) ON DELETE CASCADE,
+  skill_id    INT NOT NULL REFERENCES skill(skill_id),
+  level       INT NOT NULL CHECK (level BETWEEN 1 AND 5),
   file_id     INT NOT NULL REFERENCES source_file(file_id) ON DELETE CASCADE,
-  field_name  VARCHAR(100) NOT NULL,            -- e.g. title, city, skills.react
-  value       TEXT,
-  confidence  REAL CHECK (confidence BETWEEN 0 AND 1),
-  rule        VARCHAR(100),                     -- e.g. newer_source, alias_table, vetted_wins
-  is_winner   BOOLEAN DEFAULT FALSE,
-  created_at  TIMESTAMP DEFAULT now()
+  uploaded_by INT NOT NULL REFERENCES app_user(user_id),
+  uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- ---------- HUMAN REVIEW QUEUE ----------
@@ -174,7 +237,10 @@ CREATE TABLE review_item (
   review_id      SERIAL PRIMARY KEY,
   profile_id     INT NOT NULL REFERENCES profile(profile_id) ON DELETE CASCADE,
   file_id        INT NOT NULL REFERENCES source_file(file_id) ON DELETE CASCADE,
-  field_name     VARCHAR(100) NOT NULL,
+  entity         VARCHAR(100),                  -- e.g. work_experience[2]
+  field_name     VARCHAR(100),                  -- NULL for a failed job: links to the file only (FR-042)
+  reasons        VARCHAR(50)[] NOT NULL DEFAULT '{}',  -- e.g. {unknown_skill}, {llm_failed}
+  message        TEXT,                          -- e.g. why the job failed
   assigned_to_candidate BOOLEAN DEFAULT FALSE,  -- reviewer sent this item to the candidate
   sent_to_candidate_at  TIMESTAMP,
   resolved       BOOLEAN DEFAULT FALSE,
@@ -190,8 +256,11 @@ CREATE TABLE review_option (
   option_id   SERIAL PRIMARY KEY,
   review_id   INT NOT NULL REFERENCES review_item(review_id) ON DELETE CASCADE,
   file_id     INT NOT NULL REFERENCES source_file(file_id) ON DELETE CASCADE,
+  field_id    INT REFERENCES extracted_field(field_id) ON DELETE SET NULL,
   value       TEXT,
-  confidence  REAL CHECK (confidence BETWEEN 0 AND 1)
+  confidence  REAL CHECK (confidence BETWEEN 0 AND 1),
+  evidence    TEXT,                             -- shown next to the value (FR-043)
+  page        INT
 );
 
 -- ---------- AUDIT TRAIL: history of profile changes ----------
@@ -251,6 +320,13 @@ CREATE INDEX idx_source_file_profile ON source_file(profile_id);
 CREATE INDEX idx_source_file_status  ON source_file(status);
 CREATE INDEX idx_exp_profile         ON work_experience(profile_id);
 CREATE INDEX idx_project_profile     ON project(profile_id);
+CREATE INDEX idx_education_profile   ON education(profile_id);
+CREATE INDEX idx_cert_profile        ON certification(profile_id);
+CREATE INDEX idx_language_profile    ON language(profile_id);
+CREATE INDEX idx_link_profile        ON profile_link(profile_id);
+CREATE INDEX idx_vetting_profile     ON vetting_record(profile_id);
+CREATE INDEX idx_attempt_file        ON processing_attempt(file_id);
+CREATE INDEX idx_extracted_attempt   ON extracted_field(attempt_id);
 CREATE INDEX idx_extracted_file      ON extracted_field(file_id, field_name);
 CREATE INDEX idx_review_resolved     ON review_item(resolved);
 CREATE INDEX idx_review_file         ON review_item(file_id);
@@ -279,6 +355,168 @@ INSERT INTO skill_alias (skill_id, alias_name) VALUES
   ((SELECT skill_id FROM skill WHERE canonical_name = 'PostgreSQL'), 'postgres'),
   ((SELECT skill_id FROM skill WHERE canonical_name = 'PostgreSQL'), 'psql'),
   ((SELECT skill_id FROM skill WHERE canonical_name = 'MySQL'),      'mysql8');
+
+-- Standard skill list (migration 3c7f1a9e5b42, app/infrastructure/reference_data.py).
+-- Spelling variants (Node JS, "Pandas (Software)") need no alias: see skill match key.
+INSERT INTO skill (canonical_name) VALUES
+  ('C'), ('C++'), ('Go'), ('PHP'), ('Ruby'), ('Kotlin'), ('Swift'), ('R'), ('SQL'), ('HTML'), ('CSS'), ('Bash'),
+  ('React Native'), ('Angular'), ('Vue.js'), ('Next.js'), ('Express'), ('Django'), ('Flask'), ('FastAPI'), ('Spring Boot'), ('.NET'), ('Laravel'),
+  ('MongoDB'), ('SQL Server'), ('Oracle Database'), ('Redis'), ('Pandas'), ('NumPy'), ('scikit-learn'), ('TensorFlow'), ('PyTorch'), ('Power BI'), ('Tableau'), ('Microsoft Excel'), ('DAX'), ('SPSS'), ('Data Analysis'), ('Data Engineering'), ('Data Visualization'), ('Machine Learning'), ('Artificial Intelligence'), ('Deep Learning'), ('Statistics'), ('ETL'),
+  ('Kubernetes'), ('GitHub'), ('Linux'), ('AWS'), ('Microsoft Azure'), ('Google Cloud'), ('CI/CD'), ('REST APIs'),
+  ('Microsoft Office'), ('Microsoft Word'), ('Microsoft PowerPoint'), ('Microsoft Access'), ('Google Analytics'), ('Slack'), ('Zoom'), ('Jira'), ('Windows'), ('macOS'),
+  ('Adobe Photoshop'), ('Adobe Illustrator'), ('Adobe Premiere Pro'), ('Adobe After Effects'), ('Final Cut Pro'), ('Avid Media Composer'), ('Figma'), ('Video Editing'),
+  ('Marketing'), ('Digital Marketing'), ('Sales'), ('Customer Service'), ('Project Management'), ('Agile'), ('Scrum'), ('Public Relations'), ('Fundraising'),
+  ('Communication'), ('Teamwork'), ('Leadership'), ('Problem Solving'), ('Critical Thinking'), ('Time Management'), ('Conflict Resolution'), ('Active Listening'), ('Organization');
+
+INSERT INTO skill_alias (skill_id, alias_name)
+SELECT s.skill_id, a.alias FROM (VALUES
+  ('Go', 'golang'),
+  ('C++', 'c plus plus'),
+  ('C++', 'cpp'),
+  ('Vue.js', 'vue'),
+  ('Express', 'express.js'),
+  ('Express', 'expressjs'),
+  ('.NET', 'dotnet'),
+  ('.NET', 'asp.net'),
+  ('HTML', 'html5'),
+  ('CSS', 'css3'),
+  ('Bash', 'shell scripting'),
+  ('MongoDB', 'mongo'),
+  ('SQL Server', 'mssql'),
+  ('SQL Server', 'microsoft sql server'),
+  ('Oracle Database', 'oracle'),
+  ('scikit-learn', 'sklearn'),
+  ('Power BI', 'microsoft power bi'),
+  ('Microsoft Excel', 'excel'),
+  ('Microsoft Excel', 'ms excel'),
+  ('SPSS', 'spss statistics'),
+  ('SPSS', 'ibm spss'),
+  ('SPSS', 'ibm spss statistics'),
+  ('Data Analysis', 'data analytics'),
+  ('Machine Learning', 'ml'),
+  ('Artificial Intelligence', 'ai'),
+  ('Deep Learning', 'dl'),
+  ('Kubernetes', 'k8s'),
+  ('AWS', 'amazon web services'),
+  ('Microsoft Azure', 'azure'),
+  ('Google Cloud', 'gcp'),
+  ('Google Cloud', 'google cloud platform'),
+  ('REST APIs', 'rest'),
+  ('REST APIs', 'rest api'),
+  ('REST APIs', 'restful apis'),
+  ('CI/CD', 'continuous integration'),
+  ('Microsoft Office', 'ms office'),
+  ('Microsoft Office', 'microsoft office suite'),
+  ('Microsoft Office', 'office 365'),
+  ('Microsoft Office', 'microsoft 365'),
+  ('Microsoft Word', 'ms word'),
+  ('Microsoft PowerPoint', 'powerpoint'),
+  ('Microsoft PowerPoint', 'ms powerpoint'),
+  ('Microsoft Access', 'ms access'),
+  ('macOS', 'mac os'),
+  ('macOS', 'mac os x'),
+  ('macOS', 'os x'),
+  ('macOS', 'osx'),
+  ('Windows', 'microsoft windows'),
+  ('Adobe Photoshop', 'photoshop'),
+  ('Adobe Illustrator', 'illustrator'),
+  ('Adobe Premiere Pro', 'premiere'),
+  ('Adobe Premiere Pro', 'premiere pro'),
+  ('Adobe Premiere Pro', 'adobe premiere'),
+  ('Adobe After Effects', 'after effects'),
+  ('Final Cut Pro', 'final cut'),
+  ('Final Cut Pro', 'fcp'),
+  ('Avid Media Composer', 'avid'),
+  ('Avid Media Composer', 'media composer'),
+  ('Customer Service', 'customer care'),
+  ('Public Relations', 'pr'),
+  ('Teamwork', 'team work'),
+  ('Teamwork', 'team player'),
+  ('Leadership', 'team leadership'),
+  ('Organization', 'organisation'),
+  ('Organization', 'organizational skills'),
+  ('Organization', 'organisational skills'),
+  ('Time Management', 'time-management')
+) AS a(skill, alias)
+JOIN skill s ON s.canonical_name = a.skill;
+
+-- More soft skills (migration 4e2b8d6f1a73).
+INSERT INTO skill (canonical_name) VALUES
+  ('Attention to Detail'), ('Adaptability'), ('Creativity'), ('Decision Making'),
+  ('Emotional Intelligence'), ('Interpersonal Skills'), ('Negotiation'), ('Presentation Skills'),
+  ('Multitasking'), ('Work Ethic'), ('Analytical Thinking'), ('Strategic Thinking'),
+  ('Self-Motivation'), ('Working Under Pressure'), ('Mentoring'), ('Empathy'),
+  ('Accountability'), ('Initiative'), ('Punctuality'), ('Delegation'),
+  ('Cultural Awareness');
+
+INSERT INTO skill_alias (skill_id, alias_name)
+SELECT s.skill_id, a.alias FROM (VALUES
+  ('Communication', 'excellent communication'),
+  ('Communication', 'strong communication'),
+  ('Communication', 'effective communication'),
+  ('Communication', 'good communication'),
+  ('Communication', 'communicator'),
+  ('Teamwork', 'collaboration'),
+  ('Teamwork', 'collaborative'),
+  ('Teamwork', 'teamwork and collaboration'),
+  ('Teamwork', 'team working'),
+  ('Leadership', 'strong leadership'),
+  ('Leadership', 'people management'),
+  ('Problem Solving', 'problem solver'),
+  ('Problem Solving', 'troubleshooting'),
+  ('Critical Thinking', 'critical thinker'),
+  ('Time Management', 'time management and organization'),
+  ('Time Management', 'prioritization'),
+  ('Time Management', 'prioritisation'),
+  ('Conflict Resolution', 'conflict management'),
+  ('Conflict Resolution', 'dispute resolution'),
+  ('Active Listening', 'listening'),
+  ('Organization', 'organized'),
+  ('Organization', 'organised'),
+  ('Organization', 'well organized'),
+  ('Organization', 'well organised'),
+  ('Organization', 'highly organized'),
+  ('Organization', 'highly organised'),
+  ('Organization', 'extremely organized'),
+  ('Organization', 'extremely organised'),
+  ('Attention to Detail', 'detail oriented'),
+  ('Attention to Detail', 'attention to details'),
+  ('Attention to Detail', 'eye for detail'),
+  ('Adaptability', 'flexibility'),
+  ('Adaptability', 'flexible'),
+  ('Adaptability', 'adaptable'),
+  ('Creativity', 'creative thinking'),
+  ('Creativity', 'creative'),
+  ('Decision Making', 'decisive'),
+  ('Emotional Intelligence', 'eq'),
+  ('Interpersonal Skills', 'people skills'),
+  ('Interpersonal Skills', 'relationship building'),
+  ('Negotiation', 'negotiating'),
+  ('Presentation Skills', 'public speaking'),
+  ('Presentation Skills', 'presenting'),
+  ('Presentation Skills', 'presentations'),
+  ('Multitasking', 'multitasker'),
+  ('Work Ethic', 'strong work ethic'),
+  ('Work Ethic', 'hard working'),
+  ('Work Ethic', 'hardworking'),
+  ('Analytical Thinking', 'analytical'),
+  ('Analytical Thinking', 'analytical thinker'),
+  ('Self-Motivation', 'self motivated'),
+  ('Self-Motivation', 'self starter'),
+  ('Working Under Pressure', 'ability to work under pressure'),
+  ('Working Under Pressure', 'works well under pressure'),
+  ('Working Under Pressure', 'performing under pressure'),
+  ('Working Under Pressure', 'stress management'),
+  ('Mentoring', 'coaching'),
+  ('Mentoring', 'mentorship'),
+  ('Punctuality', 'punctual'),
+  ('Accountability', 'responsibility'),
+  ('Initiative', 'proactive'),
+  ('Initiative', 'proactivity'),
+  ('Cultural Awareness', 'cultural sensitivity'),
+  ('Cultural Awareness', 'cross cultural communication')
+) AS a(skill, alias)
+JOIN skill s ON s.canonical_name = a.skill;
 
 -- =====================================================================
 -- DASHBOARD VIEWS (admin dashboard; the review queue also serves reviewers)

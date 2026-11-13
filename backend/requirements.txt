@@ -9,3 +9,8 @@ pydantic[email]
 pwdlib[argon2]
 PyJWT
 filetype
+pymupdf
+python-docx
+rapidocr
+onnxruntime
+google-genai

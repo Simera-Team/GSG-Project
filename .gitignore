@@ -22,3 +22,10 @@ uploads/
 *.log
 
 *.egg-info/
+# Output of scripts/extract_samples.py (local checks only)
+extraction_output/
+
+# Output of scripts/process_samples.py (local checks only)
+backend/processing_output/
+
+docs/
