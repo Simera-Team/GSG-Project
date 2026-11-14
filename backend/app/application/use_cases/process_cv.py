@@ -34,7 +34,11 @@ from app.application.services.cv_processing_service import (
 from app.application.services.profile_builder import ProfileBuilder
 from app.application.services.profile_rebuild_service import ProfileRebuildService
 from app.application.services.vetting_parser import VettingParser, VettingPayloadError
-from app.domain.entities.field_record import ReviewItem, ReviewReason
+from app.domain.entities.field_record import (
+    ReviewItem,
+    ReviewReason,
+    is_cross_source,
+)
 from app.domain.entities.processing_attempt import (
     AttemptOutcome,
     AttemptTrigger,
@@ -168,7 +172,7 @@ class ProcessCVUseCase:
             id_map = self.repo.save_field_records(file_id, attempt_ids[valid], result.field_records)
 
         file_items = [i for i in result.review_items
-                      if ReviewReason.SOURCE_CONFLICT not in i.reasons]
+                      if not is_cross_source(i.reasons)]
         self.repo.replace_open_reviews(profile_id, file_id, file_items, id_map)
 
         status = result.status

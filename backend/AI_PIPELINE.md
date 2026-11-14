@@ -298,10 +298,10 @@ For every field, in this order:
 1. build the record with `raw_value`, confidence, evidence, page;
 2. a `null` value (or `is_current=false`) returns early — no evidence needed
    (FR-026);
-3. **evidence check** → `evidence_status`, and a review reason if it failed;
-4. **normalise** — see the rule table below. This can change `value`, set
+2. **evidence check** → `evidence_status`, and a review reason if it failed;
+3. **normalise** — see the rule table below. This can change `value`, set
    `rule`, lower `confidence`, or add a review reason;
-5. **then** compare the final confidence against the review limit.
+4. **then** compare the final confidence against the review limit.
 
 > Step 5 comes after step 4 on purpose. Two rules lower confidence, and if
 > the limit were applied to the model's original number, a value knocked
@@ -328,14 +328,56 @@ are trivially testable and always give the same answer (FR-034).
 | `skills.py` | 228 | `N-SKILL-01..03`, `R-09` | `skill_match_key()` reduces a name to the form two spellings must share: drops endorsement counts, trailing qualifiers, levels, version numbers and a trailing "skills"/"abilities", while keeping `+` and `#` so `C`, `C#` and `C++` stay distinct. `lookup()` is exact on that key. `resolve_fuzzy()` maps a misspelling — one edit for a 5–8 character key, two from 9 up, none under 5 — with a 0.85 mapping factor; two standard names tying choose nothing. `split_entry()` splits "React/Redux" but not "CI/CD". `suggest()` offers a reviewer the closest name and is never applied on its own. |
 | `countries.py` | 262 | `N-GEO-01..02` | `CountryCatalog.match()` by name or ISO alpha-2, with aliases for how CVs really write countries ("UK", "KSA", "Palestinian Authority"). `CITY_COUNTRIES` (109 cities) and `infer_country_code_from_city()` for the common case of a CV giving only a city — a city with more than one plausible country is deliberately absent. `DIAL_CODES` (57) feeds the phone rule. |
 | `contacts.py` | 125 | `N-PHONE-01`, `N-EMAIL-01`, `N-NAME-01` | Phone to E.164: `+962 7 9000 1234`, `0790001234` and `00962790001234` all become `+962790001234`. A local number borrows the profile's country; with no country it is rejected rather than given a guessed prefix, because a wrong dial code looks correct. Email lowercased. Names title-cased with no acronym exemption — CV headers shout names, and no person's name is an acronym. |
-| `conflict_rules.py` | 249 | `C-00..06` | Stage 5. See below. |
-| `rules.py` | 90 | — | Every rule identifier with a sentence explaining it, so a stored `rule` string can be shown to a person (FR-051). `describe()` raises on an unknown id, and a test walks every rule class, so a rule added without a description fails CI rather than reaching a dashboard as a bare code. |
+| `entity_matching.py` | 611 | `M-01`, `R-10` | Stage 5. Which entities from different sources are the same thing. See below. |
+| `conflict_rules.py` | 272 | `C-00..06` | Stage 5. See below. |
+| `rules.py` | 103 | — | Every rule identifier with a sentence explaining it, so a stored `rule` string can be shown to a person (FR-051). `describe()` raises on an unknown id, and a test walks every rule class, so a rule added without a description fails CI rather than reaching a dashboard as a bare code. |
 
 ---
 
 ## Stage 5 — Merging sources and resolving conflicts
 
-### `app/domain/services/conflict_rules.py` (249 lines)
+### `app/domain/services/entity_matching.py` (611 lines)
+
+The ladder below can only compare two values of one field, so something has
+to decide first that a CV's job and a LinkedIn job are *the same job*.
+`match_entities(records)` groups the accepted records into entities per
+source, then matches those across sources:
+
+| Entity | Same when |
+|---|---|
+| `work_experience` | The **company keys** are equal or ≥ 0.90 similar (`difflib`), **and** the date ranges overlap or one side left a start or end unstated. `company_key()` lowercases, drops punctuation, a leading "the" and legal suffixes (`llc`, `inc`, `ltd`, `gmbh`, `pvt`, …), so "Google LLC", "google, inc." and "Google" are one company and "The Walt Disney Company" is `walt disney`. |
+| `education` | Institution keys equal or ≥ 0.90 similar after common abbreviations are written out (`univ.`→university, `inst.`→institute, `tech.`→technology, `coll.`→college, `dept.`→department), so "Univ. of Jordan" and "University of Jordan" are one institution, **and** the same field of study where both name one, **and** the dates overlap or are unstated. Legal suffixes are *not* stripped here: "University" and "Institute" are what such names are made of. |
+| `certifications` | The normalized name is **exactly** equal and the issuer agrees or is missing on one side. "AWS Developer" and "AWS Architect" are similar strings and different certificates. |
+| `projects` | The normalized name is exactly equal. |
+
+What is deliberately **not** part of a match:
+
+- the **job title**, so "Engineer" against "Senior Engineer" at one company
+  over one span is one job and the title is settled by `C-02`/`C-03`;
+- the **degree level**, so a bachelor's and a master's of one study at one
+  institution is one entry with a field conflict, not two silent degrees;
+- anything from the **same source**. Two jobs at one company in one CV are
+  two jobs, so a group holds at most one entity per source.
+
+A year-only start counts as January and a year-only end as December, and
+"present" is an open end — **today's date is never read** (FR-034). Two
+fully dated spells at one employer that do not overlap are a promotion, so
+they stay two rows.
+
+Sources are processed in a fixed order (upload time, then source id) and
+candidates are worked out for every entity before anything is merged, so the
+groups never depend on the order records arrive in (NFR-023). An entity that
+could equally be either of two entities from another source is merged with
+**nothing**: it is kept on its own and a reviewer is asked which one it is
+(`R-10`, review reason `entity_match_ambiguous`), because picking one of two
+equally good candidates is exactly the guess these rules exist to avoid.
+
+Each group's `entity_id` is taken from its **earliest** member in that fixed
+order, so a newly uploaded source never renumbers the entities already in a
+profile. A group that actually brought sources together cites `M-01` on the
+profile record it produces.
+
+### `app/domain/services/conflict_rules.py` (272 lines)
 
 When a candidate has a CV *and* a LinkedIn export *and* a vetting result,
 the same field arrives more than once. `resolve_field(candidates)` applies a
@@ -347,13 +389,17 @@ fixed ladder and returns which rule decided, or who to ask:
 | `C-01` | A vetted value exists → it wins over anything self-reported | FR-032 |
 | `C-04` | Same value at two precisions → the more precise one | FR-028 |
 | `C-02` | The newer source wins — **only** where the field policy allows recency | FR-031 |
-| `C-03` | Still tied → the more trusted source kind | — |
+| `C-03` | Still tied → the more trusted source kind, **only** where the field policy allows priority | — |
 | `C-05` | Nothing decided, personal detail → ask the candidate | FR-033 |
 | `C-06` | Nothing decided, a claim → ask a reviewer | FR-033 |
 
 `FIELD_POLICIES` is the "list kept in code configuration" FR-031 asks for.
-Each row says whether recency may decide, who the fallback is, and the
-source priority order. The reasoning is in the file; the shape of it:
+Each row says whether recency may decide, whether source priority may decide,
+who the fallback is, and the source priority order. `recency` and `priority`
+are each a licence for one rung: switching one off does not pick a different
+value, it makes that rung decline, so the field falls through to the person
+named by `fallback`. That is the only safe way to say "no rule we have can
+settle this". The reasoning is in the file; the shape of it:
 
 - a **name** does not get truer with a newer file, so recency is off and the
   CV outranks a stale LinkedIn headline;
@@ -361,16 +407,24 @@ source priority order. The reasoning is in the file; the shape of it:
   recency is on and LinkedIn outranks the CV;
 - **city, country, email, phone** fall back to the *candidate*, not a
   reviewer — only they can settle where they live;
-- a **degree** is a claim about the past: recency off, reviewer fallback;
+- a **degree** is a claim about the past: recency off, **and priority off** — a
+  bachelor's in the CV against a master's on LinkedIn is not settled by
+  preferring LinkedIn, because one of the two is simply wrong and only a
+  person can say which, so it reaches `C-06` with both values;
 - a field with **no row** gets the safe default — recency, then priority,
   then a reviewer. It never silently picks a value no rule supports.
 
-### `app/application/services/profile_builder.py` (282 lines)
+### `app/application/services/profile_builder.py` (368 lines)
 
 Builds the live profile from accepted field records (FR-036, FR-063).
 
 - Calls `resolve_field` per personal field and uses the winner, recording
   the deciding rule on the record.
+- Groups work experience, education, certifications and projects with
+  `match_entities` (`M-01`) and then runs the **same** ladder on every field
+  of each group, so the `C-` rules apply inside an entity and not only to
+  personal details. A matched entity keeps every `field_id` that fed it, from
+  every source (FR-063).
 - A reviewer's decision (`rule == "review_decision"`) settles a field across
   all sources; the latest one wins and a rejection leaves it empty (FR-043).
 - Flagged records stay **out** of the live profile until a person decides
@@ -381,7 +435,7 @@ Builds the live profile from accepted field records (FR-036, FR-063).
 - The result must validate as `ProfileDocument`; if it does not, no profile
   is produced and the job goes to review (FR-038).
 
-### `app/application/dto/profile_document.py` (113 lines)
+### `app/application/dto/profile_document.py` (129 lines)
 
 The Simera profile format, as Pydantic. The validation gate for FR-038, and
 what gets stored as the generated profile JSON.
@@ -580,7 +634,7 @@ ProcessCVUseCase
   ├─► CVProcessingService ─► prompts, IAIClient, llm_output_validator
   │        └─► FieldRecordBuilder ─► evidence_checker
   │                 └─► dates, skills, countries, contacts   (domain/services)
-  │        └─► ProfileBuilder ─► conflict_rules ─► ProfileDocument
+  │        └─► ProfileBuilder ─► entity_matching ─► conflict_rules ─► ProfileDocument
   ├─► VettingParser ─► skills                                (vetting only)
   └─► ProfileRebuildService ─► ProfileBuilder
 ```
@@ -641,7 +695,8 @@ changing:
 | Test file | Tests | Covers |
 |---|---|---|
 | `test_normalisation.py` | 154 | Dates, skills (incl. fuzzy and the 5-character floor), countries, cities, phone, email, names, and that every rule id has a description. |
-| `test_conflict_rules.py` | 22 | Every rung of the `C-` ladder, the policy table, and that the same records always give the same answer. |
+| `test_conflict_rules.py` | 28 | Every rung of the `C-` ladder, the policy table, and that the same records always give the same answer. |
+| `test_entity_matching.py` | 28 | What counts as the same job, degree, certificate or project across sources and what deliberately does not: the company key, a promotion, one company twice in one CV, two equally good candidates, and that shuffled records and a newly added source leave the result and the entity ids unchanged. |
 | `test_confidence_factors.py` | 9 | The 0.85 and 0.80 factors measured on **built records**, not on the functions alone — including a value pushed under the limit by a factor. |
 | `test_vetting_parser.py` | 23 | FR-056/057, levels outside 1–5, unknown skills, broken payloads. |
 | `test_processing_service.py` | 12 | The retry loop and attempt records, via `FakeAI`. Start here for pipeline behaviour. |
@@ -764,24 +819,18 @@ exercise the review queue and the settings endpoints.
 
 Honest list, worst first.
 
-1. **Entity matching across sources is missing (`M-01`).** `ProfileBuilder`
-   de-duplicates entities on exact tuples, so "Google" and "Google LLC" stay
-   two separate jobs and their fields never meet to be compared. **The
-   conflict ladder therefore only applies to personal details, not inside
-   work experience or education.** `app/application/ai/matching/entity_matcher.py`
-   is the unported implementation. This is the next thing to do.
-2. **Nothing writes `vetting_record`.** The parser returns `VettedSkill`
+1. **Nothing writes `vetting_record`.** The parser returns `VettedSkill`
    objects and the table exists, but no repository persists them, so FR-057's
    "verified" marking is not visible anywhere yet.
-3. **No admin vetting upload route** (FR-007). The `vetting:upload`
+2. **No admin vetting upload route** (FR-007). The `vetting:upload`
    permission exists and the parser works; a `.json` uploaded through the
    CV route is processed correctly, but there is no dedicated endpoint.
-4. **`file_hash` is not unique per candidate** (FR-011, FR-055). The
+3. **`file_hash` is not unique per candidate** (FR-011, FR-055). The
    migration has no constraint and the reference SQL says system-wide
    unique. This is `feature/cv-duplicate-detection`'s work.
-5. **The confidence model is the model's own number**, adjusted by mapping
+4. **The confidence model is the model's own number**, adjusted by mapping
    and validation factors. `app/application/ai/confidence/` computes a score
    from four separately verifiable factors, which is what FR-048's quality
    numbers would need.
-6. **The prompt has no automated regression test.** Level 3 output diffing
+5. **The prompt has no automated regression test.** Level 3 output diffing
    is the only safety net.

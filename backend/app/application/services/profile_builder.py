@@ -4,8 +4,10 @@
   profile until a reviewer decides (FR-040) and become review items (FR-041).
 - Every profile record lists the field records that produced it (FR-063).
 - Records from several sources are merged: skills are unioned without
-  repeats (FR-030); identical entities are merged; a personal-info field
-  with different values from different sources is a conflict and goes to
+  repeats (FR-030); entities that describe the same thing are matched across
+  sources by :mod:`app.domain.services.entity_matching` (M-01) and then every
+  field of a matched entity goes through the same conflict ladder as a
+  personal detail; a field that no rule settles is a conflict and goes to
   review with every value and its source (FR-033).
 - The result must pass the Simera profile format; otherwise no profile is
   produced and the job goes to review (FR-038).
@@ -34,6 +36,11 @@ from app.domain.entities.field_record import (
     ReviewOption,
     ReviewReason,
 )
+from app.domain.services.entity_matching import (
+    EntityGroup,
+    MatchRule,
+    match_entities,
+)
 
 PERSONAL_FIELDS = ["first_name", "last_name", "email", "phone", "city",
                    "country", "title", "summary"]
@@ -59,32 +66,40 @@ class ProfileBuilder:
         review_items: list[ReviewItem] = []
 
         personal = self._personal_info(records, review_items)
+        accepted = [r for r in records if not r.needs_review and r.value is not None]
+
+        # M-01: the same job or degree from two sources becomes one entity, so
+        # the conflict rules compare like with like inside it.
+        matched = match_entities(accepted)
+        entity_reviews: list[ReviewItem] = []
+
+        data = {
+            "personal_info": personal,
+            "experience": self._entities(matched.of_type("work_experience"),
+                                         self._experience, entity_reviews),
+            "education": self._entities(matched.of_type("education"),
+                                        self._education, entity_reviews),
+            "skills": self._skills([g.first_fields for g in matched.of_type("skills")]),
+            "certifications": self._entities(
+                matched.of_type("certifications"),
+                lambda e: self._simple(e, ["name", "issuer", "issue_date", "url"], "name"),
+                entity_reviews),
+            "projects": self._entities(matched.of_type("projects"),
+                                       self._project, entity_reviews),
+            # A language or a link is one value, merged as a union without a
+            # ladder (M-02 / FR-030), so these keep their exact-value dedupe.
+            "languages": _dedupe(
+                [self._simple(g.first_fields, ["name", "proficiency"], "name")
+                 for g in matched.of_type("languages")], ("name",)),
+            "links": _dedupe([self._link(g.first_fields)
+                              for g in matched.of_type("links")], ("url",)),
+        }
+
         # Conflicts above may have flagged more records, so collect reviews after.
         if include_field_reviews:
             review_items[:0] = [self._review_for(r) for r in records if r.needs_review
                                 and ReviewReason.SOURCE_CONFLICT not in r.review_reasons]
-
-        accepted = [r for r in records if not r.needs_review and r.value is not None]
-        entities = _group_entities(accepted)
-
-        data = {
-            "personal_info": personal,
-            "experience": _dedupe(
-                [self._experience(e) for e in entities["work_experience"]],
-                ("company", "title", "start_date")),
-            "education": _dedupe(
-                [self._education(e) for e in entities["education"]],
-                ("institution", "degree", "field")),
-            "skills": self._skills(entities["skills"]),
-            "certifications": _dedupe(
-                [self._simple(e, ["name", "issuer", "issue_date", "url"], "name")
-                 for e in entities["certifications"]], ("name",)),
-            "projects": _dedupe([self._project(e) for e in entities["projects"]], ("name",)),
-            "languages": _dedupe(
-                [self._simple(e, ["name", "proficiency"], "name") for e in entities["languages"]],
-                ("name",)),
-            "links": _dedupe([self._link(e) for e in entities["links"]], ("url",)),
-        }
+        review_items += entity_reviews
 
         try:
             profile = ProfileDocument.model_validate(data)
@@ -154,6 +169,88 @@ class ProfileBuilder:
                 options=[_option(r) for r in outcome.others],
             ))
         return info
+
+    # ---- entities matched across sources (M-01) ----
+
+    def _entities(self, groups: list[EntityGroup], make, review_items) -> list[dict]:
+        """Turn matched entities into profile records.
+
+        Each group is one entity of the profile however many sources describe
+        it. Its fields go through the same ladder as a personal detail, so a
+        job that two sources date differently is settled by a rule (C-02/C-04)
+        instead of appearing twice; what no rule settles becomes a review item
+        and is left out of the profile rather than guessed (FR-033).
+        """
+        built: list[dict] = []
+        for group in groups:
+            if group.ambiguous_with:
+                review_items.append(self._ambiguous_item(group))
+
+            item = make(self._resolve_group(group, review_items))
+            if item is None:
+                continue
+            # FR-063: every field record that fed the entity, from every source.
+            item["field_ids"] = group.field_ids
+            item["entity_id"] = group.entity_id
+            if group.merged:
+                item["rule"] = MatchRule.SAME_ENTITY
+            built.append(item)
+        return built
+
+    def _resolve_group(self, group: EntityGroup,
+                       review_items: list[ReviewItem]) -> dict[str, FieldRecord]:
+        """The value of each field of one entity, settled across its sources."""
+        winners: dict[str, FieldRecord] = {}
+
+        for name in group.field_names:
+            outcome = resolve_field(group.records_for(name))
+
+            if outcome.decided:
+                winners[name] = outcome.winner
+                # The rule that chose the value is recorded on the record, so
+                # the profile can explain the choice later (FR-035, FR-051).
+                if outcome.rule != ConflictRule.AGREED:
+                    outcome.winner.rule = outcome.rule
+                continue
+
+            if not outcome.others:
+                continue
+
+            # FR-033: nothing unsupported is picked; every value is kept with
+            # its source and a person chooses.
+            for record in outcome.others:
+                record.review_reasons.append(ReviewReason.SOURCE_CONFLICT)
+            review_items.append(ReviewItem(
+                review_id=next(self._review_ids),
+                source=", ".join(sorted({r.source for r in outcome.others})),
+                entity=group.entity_id,
+                field_name=name,
+                reasons=[ReviewReason.SOURCE_CONFLICT],
+                message=_conflict_message(outcome),
+                options=[_option(r) for r in outcome.others],
+            ))
+        return winners
+
+    def _ambiguous_item(self, group: EntityGroup) -> ReviewItem:
+        """Ask which of several candidates an entity is (R-10).
+
+        Merging one of two equally good candidates would be a guess, so the
+        entity is kept on its own and the candidates are offered to a reviewer.
+        """
+        entity = group.members[0]
+        return ReviewItem(
+            review_id=next(self._review_ids),
+            source=entity.source,
+            entity=group.entity_id,
+            reasons=[ReviewReason.ENTITY_MATCH_AMBIGUOUS],
+            message=(f"{entity.label()!r} from source {entity.source} matches "
+                     f"{len(group.ambiguous_with)} entities of another source "
+                     f"({', '.join(group.ambiguous_ids)}), so none of them was "
+                     f"merged; a reviewer says which one it is (R-10)."),
+            options=[_option(record) for record in
+                     (candidate.identifying_record() for candidate in group.ambiguous_with)
+                     if record is not None],
+        )
 
     # ---- entities ----
 
@@ -229,17 +326,6 @@ class ProfileBuilder:
             message=record.note,
             options=[_option(record)],
         )
-
-
-def _group_entities(records: list[FieldRecord]) -> dict[str, list[dict[str, FieldRecord]]]:
-    groups: dict[tuple[str, str], dict[str, FieldRecord]] = {}
-    for r in records:
-        if r.entity_type != "personal_info":
-            groups.setdefault((r.source, r.entity), {})[r.field_name] = r
-    by_type: dict[str, list] = defaultdict(list)
-    for (_, entity), fields in groups.items():
-        by_type[entity.split("[")[0]].append(fields)
-    return by_type
 
 
 def _dedupe(items: list[dict | None], key_fields: tuple[str, ...]) -> list[dict]:

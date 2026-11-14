@@ -7,7 +7,7 @@ recomputed each time (FR-033); unchanged open conflicts keep their review item.
 
 from app.application.interfaces.processing_repository import IProcessingRepository
 from app.application.services.profile_builder import ProfileBuilder, ProfileBuildResult
-from app.domain.entities.field_record import ReviewReason
+from app.domain.entities.field_record import is_cross_source
 
 
 class ProfileRebuildService:
@@ -21,7 +21,7 @@ class ProfileRebuildService:
         if built.profile is not None:
             self.repo.replace_profile(profile_id, built.profile, records)
 
-        conflicts = [i for i in built.review_items if ReviewReason.SOURCE_CONFLICT in i.reasons]
+        conflicts = [i for i in built.review_items if is_cross_source(i.reasons)]
         self.repo.replace_open_reviews(profile_id, trigger_file_id, conflicts, {},
                                        conflicts_only=True)
         built.review_items = conflicts

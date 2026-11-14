@@ -19,9 +19,24 @@ class ReviewReason:
     UNKNOWN_SKILL = "unknown_skill"                   # FR-062
     INVALID_FORMAT = "invalid_format"                 # e-mail / URL shape
     SOURCE_CONFLICT = "source_conflict"               # FR-033
+    ENTITY_MATCH_AMBIGUOUS = "entity_match_ambiguous" # M-01 / R-10
     LLM_FAILED = "llm_failed"                         # FR-023
     NO_TEXT = "no_text"                               # FR-020
     PROFILE_INVALID = "profile_invalid"               # FR-038
+
+
+#: Reasons that are not a property of one file but of how a candidate's
+#: sources fit together, so they are recomputed for the whole profile on every
+#: rebuild instead of being replaced per file (FR-033, FR-036).
+CROSS_SOURCE_REASONS: tuple[str, ...] = (
+    ReviewReason.SOURCE_CONFLICT,
+    ReviewReason.ENTITY_MATCH_AMBIGUOUS,
+)
+
+
+def is_cross_source(reasons) -> bool:
+    """Whether a review item came from comparing sources rather than reading one."""
+    return any(reason in CROSS_SOURCE_REASONS for reason in reasons)
 
 
 @dataclass

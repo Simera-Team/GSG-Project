@@ -32,6 +32,22 @@ class CountryValue(_Strict):
     code: str = Field(pattern=r"^[A-Z]{2}$")
 
 
+class _Matched(_Strict):
+    """Fields every entity merged across sources carries (M-01, FR-063).
+
+    ``entity_id`` identifies the entity itself rather than its position in the
+    list: it is taken from the earliest source that mentions it, so a newer
+    source arriving never renumbers what is already there. ``rule`` is set only
+    where sources were actually brought together, so a profile can explain why
+    two rows became one (FR-035, FR-051).
+    """
+
+    entity_id: str | None = Field(default=None, max_length=120,
+                                  description="stable id of the matched entity")
+    rule: str | None = Field(default=None, max_length=20,
+                             description="M-01 when sources were merged into this record")
+
+
 class PersonalInfoRecord(_Strict):
     first_name: str | None = Field(default=None, max_length=100)
     last_name: str | None = Field(default=None, max_length=100)
@@ -44,7 +60,7 @@ class PersonalInfoRecord(_Strict):
     field_ids: dict[str, int] = Field(default_factory=dict, description="field name -> field record id")
 
 
-class ExperienceRecord(_Strict):
+class ExperienceRecord(_Matched):
     company: str | None = Field(default=None, max_length=255)
     title: str | None = Field(default=None, max_length=255)
     location: str | None = None
@@ -56,7 +72,7 @@ class ExperienceRecord(_Strict):
     field_ids: list[int]
 
 
-class EducationRecord(_Strict):
+class EducationRecord(_Matched):
     institution: str | None = Field(default=None, max_length=255)
     degree: str | None = Field(default=None, max_length=255)
     field: str | None = Field(default=None, max_length=255)
@@ -73,7 +89,7 @@ class SkillRecord(_Strict):
     field_ids: list[int]
 
 
-class CertificationRecord(_Strict):
+class CertificationRecord(_Matched):
     name: str = Field(max_length=255)
     issuer: str | None = Field(default=None, max_length=255)
     issue_date: PartialDateValue | None = None
@@ -81,7 +97,7 @@ class CertificationRecord(_Strict):
     field_ids: list[int]
 
 
-class ProjectRecord(_Strict):
+class ProjectRecord(_Matched):
     name: str = Field(max_length=255)
     description: str | None = None
     url: str | None = None

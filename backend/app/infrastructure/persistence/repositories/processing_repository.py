@@ -8,12 +8,16 @@ Nothing here commits; the use case commits once per job (NFR-026).
 import json
 from datetime import datetime, timezone
 
-from sqlalchemy import any_, delete, func, literal, select, text
+from sqlalchemy import any_, delete, func, literal, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.application.dto.profile_document import ProfileDocument
 from app.application.interfaces.processing_repository import IProcessingRepository
-from app.domain.entities.field_record import FieldRecord, ReviewItem, ReviewReason
+from app.domain.entities.field_record import (
+    CROSS_SOURCE_REASONS,
+    FieldRecord,
+    ReviewItem,
+)
 from app.domain.entities.processing_attempt import ProcessingAttempt
 from app.domain.entities.source_file import SourceFile
 from app.infrastructure.persistence.models import (
@@ -156,7 +160,7 @@ class SqlProcessingRepository(IProcessingRepository):
 
     def replace_open_reviews(self, profile_id, file_id, items, field_id_map,
                              conflicts_only=False) -> None:
-        is_conflict = literal(ReviewReason.SOURCE_CONFLICT) == any_(ReviewItemModel.reasons)
+        is_conflict = _is_cross_source()
         query = delete(ReviewItemModel).where(ReviewItemModel.resolved.is_not(True))
         if conflicts_only:
             # Conflicts span files, so they are recomputed for the whole profile.
@@ -195,7 +199,7 @@ class SqlProcessingRepository(IProcessingRepository):
         self.db.flush()
 
     def _open_conflict_keys(self, profile_id: int) -> dict[tuple, int]:
-        is_conflict = literal(ReviewReason.SOURCE_CONFLICT) == any_(ReviewItemModel.reasons)
+        is_conflict = _is_cross_source()
         rows = self.db.execute(
             select(ReviewItemModel.review_id, ReviewItemModel.entity,
                    ReviewItemModel.field_name, ReviewOptionModel.field_id)
@@ -272,6 +276,17 @@ class SqlProcessingRepository(IProcessingRepository):
             self.db.add(ProfileLinkModel(
                 profile_id=profile_id, type=link.type, url=link.url, field_ids=link.field_ids))
         self.db.flush()
+
+
+def _is_cross_source():
+    """SQL for "this review item came from comparing sources, not reading one".
+
+    Such an item belongs to the whole profile rather than to the file that
+    triggered the rebuild, so it is recomputed as a set instead of being
+    replaced per file (FR-033, FR-036).
+    """
+    return or_(*[literal(reason) == any_(ReviewItemModel.reasons)
+                 for reason in CROSS_SOURCE_REASONS])
 
 
 def _conflict_key(entity, field_name, field_ids) -> tuple:

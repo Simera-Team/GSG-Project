@@ -40,22 +40,21 @@ with a 0.80 validation factor and no review item, and the default review
 limit is 0.65 — stored as a setting an administrator can change (FR-046,
 FR-067) rather than a constant.
 
+M-01 is no longer pending: `matching/entity_matcher.py` has been ported to
+`app/domain/services/entity_matching.py`, which the live `ProfileBuilder` now
+uses, so the conflict rules apply inside work experience and education.
+
 ## Pending — real gaps in the live path
 
-1. `matching/entity_matcher.py` (M-01). The live `ProfileBuilder` de-duplicates
-   entities on exact tuples, so "Google" and "Google LLC" stay two jobs and
-   their fields never meet to be compared. Porting this is what makes the
-   conflict rules apply inside work experience and education, not only to
-   personal details.
-2. `confidence/scorer.py` and `confidence/evidence_verifier.py`. The live path
+1. `confidence/scorer.py` and `confidence/evidence_verifier.py`. The live path
    uses the model's own confidence and a yes/no evidence check; these compute a
    score from four separately verifiable factors, which is what FR-048's
    quality numbers would be built on.
-3. `extraction/prompts.py` and `extraction/profile_extractor.py` — an
+2. `extraction/prompts.py` and `extraction/profile_extractor.py` — an
    alternative prompt and extraction loop. The live retry loop in
    `CVProcessingService` is the one that records attempts (FR-058) and should
    stay in charge of retries; only the prompt is worth comparing.
-4. `app/infrastructure/ai/langchain_structured_output_generator.py` with
+3. `app/infrastructure/ai/langchain_structured_output_generator.py` with
    `app/application/interfaces/structured_output_generator.py` — a second
    provider path, kept so NFR-035 is demonstrable rather than asserted. The
    live port is `IAIClient`, which also returns the raw answer and the model

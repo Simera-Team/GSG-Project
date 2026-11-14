@@ -112,6 +112,34 @@ def test_recency_never_decides_a_field_whose_policy_forbids_it():
     assert outcome.rule == ConflictRule.ASK_REVIEWER
 
 
+def test_source_priority_never_decides_a_field_whose_policy_forbids_it():
+    """A degree level: one of the two claims is simply wrong, and preferring
+    the kind of file it arrived in does not tell anyone which. Both rungs are
+    off for this field, so it reaches a reviewer with both values (FR-033)."""
+    outcome = resolve_field([
+        record("BSc", kind="cv", at=OLDER,
+               entity_type="education", field_name="degree"),
+        record("MSc", kind="linkedin", at=NEWER, field_id=2,
+               entity_type="education", field_name="degree"),
+    ])
+    assert not outcome.decided
+    assert outcome.rule == ConflictRule.ASK_REVIEWER
+    assert {r.value for r in outcome.others} == {"BSc", "MSc"}
+
+
+def test_a_vetted_value_still_wins_where_source_priority_is_off():
+    """C-01 runs above C-03, so switching priority off must not reach it."""
+    outcome = resolve_field([
+        record("BSc", kind="cv", at=NEWER,
+               entity_type="education", field_name="degree"),
+        record("MSc", kind="vetting", at=OLDER, field_id=2,
+               entity_type="education", field_name="degree"),
+    ])
+    assert outcome.decided
+    assert outcome.rule == ConflictRule.VETTED_WINS
+    assert outcome.winner.value == "MSc"
+
+
 def test_same_upload_time_does_not_let_recency_decide():
     outcome = resolve_field([
         record("Amman", kind="cv", at=OLDER),
@@ -203,10 +231,22 @@ def test_recency_is_allowed_only_where_the_table_says_so(entity_type, field_name
     assert policy_for(entity_type, field_name).recency is recency
 
 
+@pytest.mark.parametrize("entity_type, field_name, priority", [
+    ("education", "degree", False),
+    ("education", "field", True),
+    ("personal_info", "first_name", True),
+    ("work_experience", "company", True),
+])
+def test_source_priority_is_allowed_only_where_the_table_says_so(
+        entity_type, field_name, priority):
+    assert policy_for(entity_type, field_name).priority is priority
+
+
 def test_an_unlisted_field_falls_back_to_the_safe_default():
     """A field nobody thought about must not silently auto-pick a value."""
     policy = policy_for("projects", "something_new")
     assert policy.fallback == Fallback.REVIEWER
+    assert policy.recency is True and policy.priority is True
 
 
 # ---- determinism (FR-034, NFR-023) ----

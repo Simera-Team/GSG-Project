@@ -10,7 +10,8 @@ The identifiers themselves live next to the logic that applies them —
 :class:`~app.domain.services.dates.DateRule`,
 :class:`~app.domain.services.countries.GeoRule`,
 :class:`~app.domain.services.contacts.ContactRule`,
-:class:`~app.domain.services.skills.SkillRule` and
+:class:`~app.domain.services.skills.SkillRule`,
+:class:`~app.domain.services.entity_matching.MatchRule` and
 :class:`~app.domain.services.conflict_rules.ConflictRule` — so a rule and its
 description cannot drift apart unnoticed: :func:`describe` raises for an
 identifier that is not listed here, and the test suite walks every class.
@@ -18,13 +19,16 @@ identifier that is not listed here, and the test suite walks every class.
 Prefixes:
 
 * ``N-`` deterministic normalisation, run while building field records.
+* ``M-`` entity matching, run when sources are merged.
 * ``C-`` conflict resolution, run when sources are merged.
 * ``R-`` the value was not kept; a person decides.
 """
 
 #: Bumped whenever a rule's behaviour changes, so each job can record the
 #: version it ran under (NFR-023).
-RULE_VERSION = "1.0.0"
+#: 1.1.0 — entity matching across sources added (M-01, R-10), and C-03 no
+#: longer decides a degree level.
+RULE_VERSION = "1.1.0"
 
 RULE_DESCRIPTIONS: dict[str, str] = {
     # --- dates (FR-028) ------------------------------------------------
@@ -51,6 +55,15 @@ RULE_DESCRIPTIONS: dict[str, str] = {
     "N-PHONE-01": "Phone number put into E.164 form.",
     "N-EMAIL-01": "Email address lowercased and validated.",
     "N-NAME-01": "Person name spacing collapsed and title-cased.",
+
+    # --- entity matching across sources (FR-031, FR-063) ----------------
+    "M-01": "Entities from different sources describe the same thing and were "
+            "merged: the same company or institution, and dates that overlap "
+            "or were not stated. The job title and the degree level are not "
+            "part of the match, so a difference in them is a field conflict.",
+    "R-10": "An entity could equally be either of several entities from "
+            "another source, so nothing was merged and a person decides which "
+            "of them it is.",
 
     # --- conflict resolution (FR-031 to FR-034) -------------------------
     "C-00": "Every source agreed on this value.",

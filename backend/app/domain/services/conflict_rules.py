@@ -9,7 +9,10 @@ that, and only the last step involves a person:
 * ``C-02`` otherwise the newer source wins, but only for fields whose rule
   allows recency (FR-031). The list of those fields is :data:`FIELD_POLICIES`,
   the "list kept in code configuration" the requirement asks for.
-* ``C-03`` still tied: the higher-priority source kind wins.
+* ``C-03`` still tied: the higher-priority source kind wins, but only for
+  fields whose rule allows it. A claim whose truth does not depend on which
+  file it arrived in — a degree level — switches this off, so a disagreement
+  between two self-reported sources reaches a person instead.
 * ``C-04`` the same value at different precision is not a conflict; the more
   precise one is kept.
 * ``C-05`` / ``C-06`` nothing decided: keep every value with its source and
@@ -29,7 +32,9 @@ from app.domain.entities.field_record import FieldRecord
 
 #: Bumped whenever a row in FIELD_POLICIES changes, so a job processed under
 #: the old table stays explainable (NFR-023).
-POLICY_VERSION = "1.0.0"
+#: 1.1.0 — source priority may now be switched off per field; it is off for
+#: ("education", "degree"), which used to be settled by C-03.
+POLICY_VERSION = "1.1.0"
 
 
 class ConflictRule:
@@ -58,9 +63,19 @@ DEFAULT_SOURCE_PRIORITY = ("vetting", "linkedin", "cv")
 
 @dataclass(frozen=True)
 class FieldPolicy:
-    """How one field behaves when sources disagree."""
+    """How one field behaves when sources disagree.
+
+    ``recency`` and ``priority`` are each a licence for one rung of the ladder
+    (C-02 and C-03). Switching one off does not pick a different value — it
+    makes that rung decline to decide, so the field falls through to the
+    person named by ``fallback``. That is the only safe way to say "no rule we
+    have can settle this": never guessing is the point (FR-033).
+    """
 
     recency: bool = True
+    #: Whether the more trusted *kind* of source may settle the field (C-03).
+    #: Off where the kind of file says nothing about the truth of the claim.
+    priority: bool = True
     fallback: str = Fallback.REVIEWER
     source_priority: tuple[str, ...] = DEFAULT_SOURCE_PRIORITY
 
@@ -99,8 +114,13 @@ FIELD_POLICIES: dict[tuple[str, str], FieldPolicy] = {
     ("education", "end_date"): FieldPolicy(recency=True),
 
     # A degree is a claim about the past; a newer file does not make it truer,
-    # so an unresolved disagreement goes to a reviewer (FR-033).
-    ("education", "degree"): FieldPolicy(recency=False),
+    # so an unresolved disagreement goes to a reviewer (FR-033). Neither does
+    # the kind of file: a bachelor's in the CV against a master's on LinkedIn
+    # is not settled by preferring LinkedIn, because one of the two is simply
+    # wrong and only a person can say which. Both rungs are therefore off and
+    # the conflict reaches C-06 with both values (M-01 is what brings the two
+    # rows together in the first place).
+    ("education", "degree"): FieldPolicy(recency=False, priority=False),
     ("education", "field"): FieldPolicy(recency=False),
 
     # A language level is self-reported until a vetting result says otherwise,
@@ -174,11 +194,14 @@ def resolve_field(candidates: list[FieldRecord]) -> Resolution:
             return Resolution(ConflictRule.NEWER_WINS, newest,
                               [c for c in usable if c is not newest])
 
-    # C-03: still tied, so the more trusted kind of source wins.
-    by_priority = _only_highest_priority(usable, policy.source_priority)
-    if by_priority is not None:
-        return Resolution(ConflictRule.SOURCE_PRIORITY, by_priority,
-                          [c for c in usable if c is not by_priority])
+    # C-03: still tied, so the more trusted kind of source wins — where the
+    # policy allows it. A vetted value has already won at C-01, so what is
+    # left here is one self-reported file against another.
+    if policy.priority:
+        by_priority = _only_highest_priority(usable, policy.source_priority)
+        if by_priority is not None:
+            return Resolution(ConflictRule.SOURCE_PRIORITY, by_priority,
+                              [c for c in usable if c is not by_priority])
 
     # C-05 / C-06: no rule decides. Every value is kept with its source and a
     # person is asked; nothing unsupported is ever auto-picked (FR-033).
