@@ -25,7 +25,8 @@ dependencies = [
     "rapidocr",
     "onnxruntime",
     "google-genai",
-    "aio-pika"
+    "aio-pika",
+    "langchain-core"
 ]
 
 [project.optional-dependencies]
