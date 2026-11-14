@@ -66,6 +66,17 @@ CREATE TRIGGER trg_profile_updated_at
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- ---------- UPLOADED FILES ----------
+-- Settings an administrator changes at runtime (FR-046, FR-067).
+-- The limit each job used is stored on that job's attempts, so a change here
+-- applies to later jobs only and an old decision stays explainable.
+CREATE TABLE system_setting (
+  key         VARCHAR(64) PRIMARY KEY,
+  value       TEXT NOT NULL,
+  description TEXT,
+  updated_by  INT REFERENCES app_user(user_id) ON DELETE SET NULL,  -- null until changed
+  updated_at  TIMESTAMP NOT NULL DEFAULT now()
+);
+
 CREATE TABLE source_file (
   file_id           SERIAL PRIMARY KEY,
   profile_id        INT NOT NULL REFERENCES profile(profile_id) ON DELETE CASCADE,

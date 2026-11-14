@@ -11,6 +11,7 @@ from app.application.interfaces.read_repository import IReadRepository
 from app.application.interfaces.message_publisher import IMessagePublisher
 from app.core.dependencies import (
     get_message_publisher,
+    get_settings_repository,
     get_read_repository,
     get_user_repository,
     require_permission,
@@ -29,6 +30,15 @@ from app.presentation.schemas.file_schema import (
     RerunOut,
 )
 from app.presentation.schemas.profile_schema import StaffUserIn, StaffUserOut
+from app.presentation.schemas.settings_schema import (
+    ConfidenceThresholdIn,
+    SettingOut,
+    SettingsListOut,
+)
+from app.infrastructure.persistence.repositories.settings_repository import (
+    CONFIDENCE_THRESHOLD_KEY,
+    SqlSettingsRepository,
+)
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -40,6 +50,7 @@ DashboardViewer = _needs(Permission.DASHBOARD_VIEW)
 JobViewer = _needs(Permission.CANDIDATE_DATA_ACCESS_ANY)
 JobRerunner = _needs(Permission.JOB_RERUN)
 UserManager = _needs(Permission.USER_MANAGE)
+SettingsManager = _needs(Permission.SETTINGS_MANAGE)
 Reader = Annotated[IReadRepository, Depends(get_read_repository)]
 FileId = Annotated[int, Path(ge=1)]
 ERRORS = {401: {"description": "Not logged in"},
@@ -121,3 +132,31 @@ def create_staff_user(body: StaffUserIn, admin: UserManager,
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     role = user.role.value if isinstance(user.role, UserRole) else str(user.role)
     return StaffUserOut(user_id=user.user_id, name=user.name, email=user.email, role=role)
+
+
+Settings = Annotated[SqlSettingsRepository, Depends(get_settings_repository)]
+
+
+@router.get("/settings", response_model=SettingsListOut, responses=ERRORS,
+            summary="Settings an administrator controls")
+def list_settings(admin: SettingsManager, repo: Settings) -> SettingsListOut:
+    """The stored settings with who last changed each one and when (FR-067)."""
+    return SettingsListOut(settings=[SettingOut(**vars(s)) for s in repo.list_settings()])
+
+
+@router.put("/settings/confidence-threshold", response_model=SettingOut,
+            responses=ERRORS | {400: {"description": "Limit outside 0 to 1"}},
+            summary="Set the limit below which fields go to review")
+def set_confidence_threshold(body: ConfidenceThresholdIn, admin: SettingsManager,
+                             repo: Settings) -> SettingOut:
+    """Set the review limit (FR-046).
+
+    Applies to later jobs only: every job records the limit it ran under, so a
+    change never rewrites a decision already taken (FR-067).
+    """
+    try:
+        updated = repo.set_confidence_threshold(body.value, admin.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=str(exc)) from exc
+    return SettingOut(**vars(updated))

@@ -74,7 +74,7 @@ class ProcessingResult:
 class CVProcessingService:
 
     def __init__(self, ai_client: IAIClient, countries: CountryCatalog,
-                 skills: SkillCatalog, confidence_threshold: float = 0.6,
+                 skills: SkillCatalog, confidence_threshold: float = 0.65,
                  max_attempts: int = 3, retry_base_seconds: float = 2.0,
                  sleep: Callable[[float], None] = time.sleep):
         self.ai_client = ai_client

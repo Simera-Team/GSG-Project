@@ -25,13 +25,20 @@ change the live module instead.
 | `schemas/extracted_profile.py` | `app/application/dto/cv_extraction.py` |
 | `schemas/field_record.py` | `app/domain/entities/field_record.py` |
 
-Two differences were deliberate when porting, and the live version is the one
-that holds:
+Differences that remain deliberate, where the live version is the one that
+holds:
 
 - **Dates** keep month or year precision only, never a day (FR-028). The
   version here kept days.
 - **Soft skills** are standard skills with their own aliases, not a stop list.
   Nothing is dropped for being a soft skill (FR-062).
+
+Three behaviours were later changed back to match the AI rules document, so
+the live path now agrees with this package on them: fuzzy skill matching maps
+automatically with a 0.85 mapping factor, an ambiguous date keeps the year
+with a 0.80 validation factor and no review item, and the default review
+limit is 0.65 — stored as a setting an administrator can change (FR-046,
+FR-067) rather than a constant.
 
 ## Pending — real gaps in the live path
 

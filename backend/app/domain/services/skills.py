@@ -41,6 +41,17 @@ class SkillRule:
 
     STANDARD = "N-SKILL-01"      # matched the standard list on its match key
     SPLIT = "N-SKILL-02"         # one entry named two skills
+    FUZZY = "N-SKILL-03"         # matched an alias within the allowed edit distance
+    UNKNOWN = "R-09"             # matched nothing; a person decides
+
+
+#: Shortest match key that may be fuzzy-matched. Under five characters almost
+#: every name is one edit from another one ("Go" / "God", "C#" / "C").
+FUZZY_MIN_LENGTH = 5
+
+#: Confidence factor applied to a value reached by a fuzzy match, so a
+#: corrected spelling is never as certain as an exact one (N-SKILL-03).
+FUZZY_MAPPING_FACTOR = 0.85
 
 
 SUGGEST_CUTOFF = 0.8
@@ -119,6 +130,39 @@ class SkillCatalog:
             return parts
         return [text]
 
+    def resolve_fuzzy(self, name: str | None) -> str | None:
+        """Standard name for a near-miss spelling, or None (N-SKILL-03).
+
+        One edit is allowed for a match key of 5 to 8 characters and two from
+        9 upwards; shorter keys are never fuzzy-matched. A misspelt known
+        skill is not an unknown skill, so "Postgress" becomes PostgreSQL
+        rather than going to a reviewer (FR-062).
+
+        Still deterministic (FR-034): the distance rule is fixed, and when two
+        different standard names tie at the best distance nothing is chosen,
+        because picking one of them would be arbitrary.
+        """
+        if not name or not name.strip():
+            return None
+
+        key = skill_match_key(name)
+        if len(key) < FUZZY_MIN_LENGTH:
+            return None
+
+        max_distance = 1 if len(key) <= 8 else 2
+        best_distance, winners = max_distance + 1, set()
+
+        for alias, canonical in self._lookup.items():
+            distance = bounded_edit_distance(key, alias, max_distance)
+            if distance is None or distance == 0:
+                continue
+            if distance < best_distance:
+                best_distance, winners = distance, {canonical}
+            elif distance == best_distance:
+                winners.add(canonical)
+
+        return winners.pop() if len(winners) == 1 else None
+
     def suggest(self, name: str | None) -> str | None:
         """Closest standard skill for an unknown name - a hint for the reviewer only."""
         if not name:
@@ -145,3 +189,40 @@ def union_skills(skill_lists: Iterable[Iterable[str]]) -> list[str]:
         for skill in skills:
             seen.setdefault(skill_match_key(skill), skill)
     return list(seen.values())
+
+
+def bounded_edit_distance(left: str, right: str, max_distance: int) -> int | None:
+    """The edit distance between two strings, or None once it exceeds the bound.
+
+    Swapping two adjacent characters counts as one edit, not two, because that
+    is how typing errors actually happen: "Pyhton" is one slip from "Python",
+    and allowing a single edit for a short name only works if it is counted
+    that way.
+
+    Giving up early keeps lookups cheap: the rules never ask beyond distance 2.
+    """
+    if abs(len(left) - len(right)) > max_distance:
+        return None
+    if left == right:
+        return 0
+
+    before_previous: list[int] = []
+    previous = list(range(len(right) + 1))
+
+    for i, left_char in enumerate(left, start=1):
+        current = [i] + [0] * len(right)
+        for j, right_char in enumerate(right, start=1):
+            cost = 0 if left_char == right_char else 1
+            current[j] = min(previous[j] + 1,
+                             current[j - 1] + 1,
+                             previous[j - 1] + cost)
+            if (i > 1 and j > 1
+                    and left_char == right[j - 2] and left[i - 2] == right_char):
+                current[j] = min(current[j], before_previous[j - 2] + 1)
+
+        if min(current) > max_distance:
+            return None
+        before_previous, previous = previous, current
+
+    distance = previous[-1]
+    return distance if distance <= max_distance else None

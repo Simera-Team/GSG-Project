@@ -14,7 +14,6 @@ class ReviewReason:
     EVIDENCE_NOT_FOUND = "evidence_not_found"         # NFR-028
     VALUE_NOT_IN_EVIDENCE = "value_not_in_evidence"   # NFR-028
     UNPARSEABLE_DATE = "unparseable_date"             # FR-028
-    AMBIGUOUS_DATE_ORDER = "ambiguous_date_order"     # FR-028, N-DATE-03
     CURRENT_JOB_CONFLICT = "current_job_has_end_date" # FR-028
     UNKNOWN_COUNTRY = "unknown_country"               # FR-070
     UNKNOWN_SKILL = "unknown_skill"                   # FR-062

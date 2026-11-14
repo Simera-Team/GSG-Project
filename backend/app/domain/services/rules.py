@@ -30,8 +30,8 @@ RULE_DESCRIPTIONS: dict[str, str] = {
     # --- dates (FR-028) ------------------------------------------------
     "N-DATE-01": "Month-precision date recognised and stored as year-month.",
     "N-DATE-02": "Year-only date kept at year precision; no month was invented.",
-    "N-DATE-03": "Day and month order was ambiguous; the year was kept and a "
-                 "reviewer was asked for the month.",
+    "N-DATE-03": "Day and month order was ambiguous; the year was kept at "
+                 "year precision and the month was dropped, never guessed.",
     "N-DATE-04": "Ongoing-role marker ('present', 'current', 'now').",
     "N-DATE-05": "End date came before the start date; the two were swapped.",
     "N-DATE-06": "Date too far in the future to be real; treated as unreadable.",
@@ -39,6 +39,10 @@ RULE_DESCRIPTIONS: dict[str, str] = {
     # --- skills (FR-029, FR-030, FR-062) --------------------------------
     "N-SKILL-01": "Skill name matched the standard list on its match key.",
     "N-SKILL-02": "One entry named two skills and was split into two records.",
+    "N-SKILL-03": "Skill name matched a standard name or alias within the "
+                  "allowed edit distance; the spelling was corrected.",
+    "R-09": "Skill matched nothing in the standard list or the aliases, so a "
+            "person decides whether it is new, a mapping, or rejected.",
 
     # --- places and contacts (FR-070) -----------------------------------
     "N-GEO-01": "Country matched the country list by name or two-letter code.",

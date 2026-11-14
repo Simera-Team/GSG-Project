@@ -236,3 +236,12 @@ def get_read_repository(
 ):
     from app.infrastructure.persistence.repositories.read_repository import SqlReadRepository
     return SqlReadRepository(db)
+
+
+def get_settings_repository(
+    db: Annotated[Session, Depends(get_db)]
+):
+    from app.infrastructure.persistence.repositories.settings_repository import (
+        SqlSettingsRepository,
+    )
+    return SqlSettingsRepository(db)

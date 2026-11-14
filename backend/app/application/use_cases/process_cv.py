@@ -50,7 +50,7 @@ class ProcessCVUseCase:
 
     def __init__(self, repository: IProcessingRepository, catalogs: ICatalogRepository,
                  reader: IDocumentReader, ai_client: IAIClient, unit_of_work: IUnitOfWork,
-                 confidence_threshold: float = 0.6, max_attempts: int = 3,
+                 confidence_threshold: float = 0.65, max_attempts: int = 3,
                  retry_base_seconds: float = 2.0,
                  sleep: Callable[[float], None] = time.sleep):
         self.repo = repository

@@ -50,16 +50,17 @@ def test_bad_dates_are_invalid(text):
 
 
 @pytest.mark.parametrize("text", ["04/05/2022", "1/2/2020"])
-def test_ambiguous_day_month_order_keeps_the_year_and_asks_a_reviewer(text):
+def test_ambiguous_day_month_order_keeps_the_year_only(text):
     """N-DATE-03: either part could be the month, but the year is certain.
 
-    The year is kept so the profile has a usable date, and the field is
-    flagged so a reviewer can restore the month (FR-028, FR-041). Discarding
-    the whole date would lose a fact the source states unambiguously.
+    The year is kept at year precision and the month is dropped, never
+    guessed. Nobody is asked: the rule is deterministic, so the only trace is
+    a lower validation factor on the value (see the builder test for that).
     """
     result = parse_date(text)
     assert result.kind == "date"
     assert result.date.precision == "year"
+    assert result.date.iso == text[-4:]
     assert result.ambiguous is True
 
 
@@ -142,16 +143,52 @@ def test_unknown_skill_is_none(text):
     assert seed_skill_catalog().lookup(text) is None
 
 
+@pytest.mark.parametrize("text, standard", [
+    ("Postgress", "PostgreSQL"),     # one substitution plus one insertion
+    ("Pyhton", "Python"),            # two characters transposed
+    ("Dockerr", "Docker"),           # one character too many
+    ("Javascrpt", "JavaScript"),
+])
+def test_misspelt_known_skill_is_mapped_automatically(text, standard):
+    """N-SKILL-03: a misspelt known skill is not an unknown skill (FR-062).
+
+    One edit is allowed for a match key of 5 to 8 characters and two from 9
+    upwards. The rule is fixed, so this stays deterministic (FR-034).
+    """
+    assert seed_skill_catalog().resolve_fuzzy(text) == standard
+
+
+@pytest.mark.parametrize("text", ["God", "Jva", "Rst", "Pyt"])
+def test_short_names_are_never_fuzzy_matched(text):
+    """Under five characters almost everything is one edit from something
+    else, so "God" must not become "Go"."""
+    assert seed_skill_catalog().resolve_fuzzy(text) is None
+
+
+@pytest.mark.parametrize("text", [
+    "Adobe Effects",                 # five edits away: a missing word, not a typo
+    "Strong verbal communication",   # a phrase, not a misspelling
+    "Creative problem solving",
+    "Nagra", "Short Films",
+])
+def test_a_name_too_far_from_any_standard_skill_is_not_mapped(text):
+    catalog = seed_skill_catalog()
+    assert catalog.lookup(text) is None
+    assert catalog.resolve_fuzzy(text) is None
+
+
 @pytest.mark.parametrize("text, hint", [
-    ("Adobe Effects", "Adobe After Effects"),          # close spelling
-    ("Postgress", "PostgreSQL"),                      # misspelt
+    ("Adobe Effects", "Adobe After Effects"),
     ("Strong verbal communication", "Communication"),  # standard skill inside the phrase
     ("Creative problem solving", "Problem Solving"),
     ("Nagra", None), ("Short Films", None),
 ])
 def test_suggestion_for_reviewer(text, hint):
+    """R-09: what matches nothing still reaches a person, with a hint that is
+    offered and never applied on its own."""
     catalog = seed_skill_catalog()
-    assert catalog.lookup(text) is None        # never applied automatically (FR-062)
+    assert catalog.lookup(text) is None
+    assert catalog.resolve_fuzzy(text) is None
     assert catalog.suggest(text) == hint
 
 

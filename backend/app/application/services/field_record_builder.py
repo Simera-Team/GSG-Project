@@ -34,7 +34,15 @@ from app.domain.services.dates import (
     parse_date,
     repair_date_order,
 )
-from app.domain.services.skills import SkillCatalog
+from app.domain.services.skills import (
+    FUZZY_MAPPING_FACTOR,
+    SkillCatalog,
+    SkillRule,
+)
+
+#: Confidence factor for a date whose day/month order was ambiguous: the year
+#: is certain but the month was dropped (N-DATE-03).
+AMBIGUOUS_DATE_VALIDATION_FACTOR = 0.80
 
 DATE_FIELDS = {"start_date", "end_date", "issue_date"}
 URL_FIELDS = {"url"}
@@ -51,7 +59,7 @@ ENTITY_LISTS = ["work_experience", "education", "skills", "certifications",
 
 @dataclass
 class FieldRecordSettings:
-    confidence_threshold: float = 0.6     # FR-046 default review limit
+    confidence_threshold: float = 0.65    # FR-046 default review limit
 
 
 class FieldRecordBuilder:
@@ -253,13 +261,18 @@ class FieldRecordBuilder:
         elif not check.value_supported:
             reasons.append(ReviewReason.VALUE_NOT_IN_EVIDENCE)
 
+        # Normalisation can lower the confidence (a corrected spelling or an
+        # ambiguous date is less certain than an exact read), so it runs before
+        # the limit is applied: otherwise a value knocked below the limit would
+        # still count as accepted.
+        self._normalise(record, entity_type, field_name)
+
         # FR-041 / NFR-027 / FR-018
-        if field.confidence < self.settings.confidence_threshold:
+        if record.confidence < self.settings.confidence_threshold:
             reasons.append(ReviewReason.LOW_CONFIDENCE)
         if low_ocr:
             reasons.append(ReviewReason.LOW_OCR_CONFIDENCE)
 
-        self._normalise(record, entity_type, field_name)
         return record
 
     def _normalise(self, record: FieldRecord, entity_type: str, field_name: str) -> None:
@@ -271,9 +284,11 @@ class FieldRecordBuilder:
                 record.value = result.date.to_dict()
                 record.rule = result.rule or DateRule.MONTH
                 if result.ambiguous:
-                    # N-DATE-03: the year is certain, the month is not. The
-                    # value is kept so a reviewer confirms rather than retypes.
-                    record.review_reasons.append(ReviewReason.AMBIGUOUS_DATE_ORDER)
+                    # N-DATE-03: either part could be the month, but the year is
+                    # certain, so the year is kept at year precision. Nobody is
+                    # asked: the rule is deterministic and nothing is guessed;
+                    # only the lost month shows up in the confidence.
+                    record.confidence *= AMBIGUOUS_DATE_VALIDATION_FACTOR
             elif result.kind == "current" and field_name == "end_date":
                 record.value = "current"
                 record.rule = DateRule.CURRENT_MARKER
@@ -294,14 +309,29 @@ class FieldRecordBuilder:
                 record.value = standard
                 record.rule = "alias_table" if standard.casefold() != raw.strip().casefold() \
                     else "standard_name"
-            else:
-                record.review_reasons.append(ReviewReason.UNKNOWN_SKILL)
-                hint = self.skills.suggest(raw)
-                record.note = (f"Not a standard skill. Closest standard skill: {hint} "
-                               f"(map it with map_to_skill), or approve it as new."
-                               if hint else
-                               "Not a standard skill: approve it as new, map it to an "
-                               "existing skill with map_to_skill, or reject it.")
+                return
+
+            # N-SKILL-03: a misspelt known skill is not an unknown skill, so a
+            # name within the allowed edit distance is mapped rather than
+            # queued. The mapping factor keeps a corrected spelling from being
+            # as certain as an exact match.
+            fuzzy = self.skills.resolve_fuzzy(raw)
+            if fuzzy:
+                record.value = fuzzy
+                record.rule = SkillRule.FUZZY
+                record.confidence *= FUZZY_MAPPING_FACTOR
+                record.note = f"Read as {fuzzy!r}; the source wrote {raw.strip()!r}"
+                return
+
+            # R-09: matched nothing in the tables, so a person decides.
+            record.rule = SkillRule.UNKNOWN
+            record.review_reasons.append(ReviewReason.UNKNOWN_SKILL)
+            hint = self.skills.suggest(raw)
+            record.note = (f"Not a standard skill. Closest standard skill: {hint} "
+                           f"(map it with map_to_skill), or approve it as new."
+                           if hint else
+                           "Not a standard skill: approve it as new, map it to an "
+                           "existing skill with map_to_skill, or reject it.")
 
         elif field_name == "email":
             # N-EMAIL-01: lowercase, so one address is not two values of a field.

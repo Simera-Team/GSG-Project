@@ -14,6 +14,14 @@ def build_process_cv_use_case(db: Session, settings) -> ProcessCVUseCase:
         SqlProcessingRepository,
     )
     from app.infrastructure.persistence.repositories.unit_of_work import SqlAlchemyUnitOfWork
+    from app.infrastructure.persistence.repositories.settings_repository import (
+        SqlSettingsRepository,
+    )
+
+    # FR-046 / FR-067: the limit an administrator set, not a deploy-time value.
+    # The job records whichever limit it ran under, so a later change never
+    # rewrites a decision already taken.
+    threshold = SqlSettingsRepository(db).confidence_threshold()
 
     return ProcessCVUseCase(
         repository=SqlProcessingRepository(db),
@@ -21,7 +29,7 @@ def build_process_cv_use_case(db: Session, settings) -> ProcessCVUseCase:
         reader=StoredDocumentReader(LocalFileStorage()),
         ai_client=create_ai_client(settings),
         unit_of_work=SqlAlchemyUnitOfWork(db),
-        confidence_threshold=settings.REVIEW_CONFIDENCE_THRESHOLD,
+        confidence_threshold=threshold,
         max_attempts=settings.LLM_MAX_ATTEMPTS,
         retry_base_seconds=settings.LLM_RETRY_BASE_SECONDS,
     )
