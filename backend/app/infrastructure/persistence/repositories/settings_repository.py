@@ -6,14 +6,16 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.domain.services.confidence import DEFAULT_REVIEW_CONFIDENCE
 from app.infrastructure.persistence.models.system_setting_model import SystemSettingModel
 
 #: Key of the limit below which a field goes to review.
 CONFIDENCE_THRESHOLD_KEY = "review_confidence_threshold"
 
 #: Used when the table has no row yet, so a fresh database behaves the same as
-#: a migrated one.
-DEFAULT_CONFIDENCE_THRESHOLD = 0.65
+#: a migrated one. The number itself lives with the confidence model, so the
+#: shipped default cannot drift away from the one the score is compared with.
+DEFAULT_CONFIDENCE_THRESHOLD = DEFAULT_REVIEW_CONFIDENCE
 
 
 @dataclass(frozen=True)

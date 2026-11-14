@@ -18,6 +18,7 @@ from app.domain.entities.field_record import (
     FieldRecord,
     ReviewItem,
 )
+from app.domain.services.confidence import ConfidenceParts
 from app.domain.entities.processing_attempt import ProcessingAttempt
 from app.domain.entities.source_file import SourceFile
 from app.infrastructure.persistence.models import (
@@ -113,6 +114,8 @@ class SqlProcessingRepository(IProcessingRepository):
                 raw_value=r.raw_value,
                 value=r.value,
                 confidence=r.confidence,
+                confidence_parts=r.confidence_parts.to_dict() if r.confidence_parts else None,
+                model_confidence=r.model_confidence,
                 evidence=r.evidence,
                 page=r.page,
                 evidence_status=r.evidence_status,
@@ -152,9 +155,25 @@ class SqlProcessingRepository(IProcessingRepository):
                 evidence=m.evidence, page=m.page, evidence_status=m.evidence_status,
                 rule=m.rule or "", review_reasons=list(m.review_reasons or []),
                 source_kind=source_kind, source_uploaded_at=uploaded_at,
+                # Read back so a rebuild can keep explaining the score, and so
+                # the agreement boost (M-04) can add to parts that exist.
+                confidence_parts=_parts(m.confidence_parts),
+                model_confidence=m.model_confidence,
             )
             for m, source_kind, uploaded_at in rows
         ]
+
+    def save_rejected_values(self, attempt_id, rejected) -> None:
+        """Store the values an R- rule dropped, with the attempt that read them.
+
+        They belong to the attempt and not to the profile: a rejected value was
+        never part of the candidate's data, only of what one model answer
+        claimed (R-03, NFR-028).
+        """
+        attempt = self.db.get(ProcessingAttemptModel, attempt_id)
+        if attempt is not None:
+            attempt.rejected = [r.to_dict() for r in rejected]
+            self.db.flush()
 
     # ---- review queue ----
 
@@ -276,6 +295,21 @@ class SqlProcessingRepository(IProcessingRepository):
             self.db.add(ProfileLinkModel(
                 profile_id=profile_id, type=link.type, url=link.url, field_ids=link.field_ids))
         self.db.flush()
+
+
+def _parts(stored) -> ConfidenceParts | None:
+    """Read stored confidence parts back, ignoring keys a later version added.
+
+    A record written before the confidence model existed has none, and its
+    score cannot be decomposed after the fact, so it stays None rather than
+    being given invented parts.
+    """
+    if not isinstance(stored, dict):
+        return None
+    known = {name: stored[name] for name in
+             ("base", "evidence", "validation", "mapping", "agreement")
+             if isinstance(stored.get(name), (int, float))}
+    return ConfidenceParts(**known) if known else None
 
 
 def _is_cross_source():

@@ -45,6 +45,9 @@ class ProcessingAttemptModel(Base):
     validation_result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     error_message: Mapped[str | None] = mapped_column(Text)
     confidence_threshold: Mapped[float | None] = mapped_column(REAL)   # FR-067
+    # Values an R- rule dropped: not field records and not review items, kept
+    # so a drop can be audited (R-03, NFR-028). Never in an application log.
+    rejected: Mapped[list[Any] | None] = mapped_column(JSONB)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -71,6 +74,13 @@ class ExtractedFieldModel(Base):
     raw_value: Mapped[Any | None] = mapped_column(JSONB, nullable=True)   # as the LLM returned it
     value: Mapped[Any | None] = mapped_column(JSONB, nullable=True)       # after normalisation
     confidence: Mapped[float | None] = mapped_column(REAL)
+    # base x evidence x validation x mapping, plus any cross-source agreement
+    # (M-04), so a stored confidence can always be explained rather than
+    # trusted (FR-035, FR-048).
+    confidence_parts: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # What the model said about its own answer. Stored for comparison only: it
+    # is not part of the score and decides nothing.
+    model_confidence: Mapped[float | None] = mapped_column(REAL)
     evidence: Mapped[str | None] = mapped_column(Text)
     page: Mapped[int | None] = mapped_column(Integer)
     evidence_status: Mapped[str] = mapped_column(String(20), nullable=False)

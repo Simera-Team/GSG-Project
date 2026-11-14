@@ -9,6 +9,11 @@ class PageResult:
     text: str
     ocr_confidence: float | None = None
     ocr_fixes: list[str] = field(default_factory=list)   # e.g. ["rotated 90", "deskewed 4.2 degrees"]
+    # The part of `text` that came from a text layer, or None for a page read
+    # entirely by OCR. A "mixed" page holds both, and the confidence model has
+    # to tell them apart: text read by a machine is worth what the machine
+    # thought of it, text that was already in the file is worth face value.
+    text_layer: str | None = None
 
 
 @dataclass

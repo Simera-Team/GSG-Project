@@ -19,9 +19,11 @@ identifier that is not listed here, and the test suite walks every class.
 Prefixes:
 
 * ``N-`` deterministic normalisation, run while building field records.
-* ``M-`` entity matching, run when sources are merged.
+* ``M-`` entity matching and cross-source agreement, run when sources merge.
 * ``C-`` conflict resolution, run when sources are merged.
-* ``R-`` the value was not kept; a person decides.
+* ``R-`` the value was not kept. Usually a person decides; ``R-03`` is the
+  exception, where the value is not in the document and so there is nothing
+  to decide.
 """
 
 #: Bumped whenever a rule's behaviour changes, so each job can record the
@@ -56,6 +58,12 @@ RULE_DESCRIPTIONS: dict[str, str] = {
     "N-EMAIL-01": "Email address lowercased and validated.",
     "N-NAME-01": "Person name spacing collapsed and title-cased.",
 
+    # --- rejection: the value never becomes a field record --------------
+    "R-03": "The evidence snippet was not in the source text, or did not "
+            "support the value, so the value was dropped rather than stored. "
+            "Nothing is sent to a person: a value that is not in the document "
+            "is not a judgement call.",
+
     # --- entity matching across sources (FR-031, FR-063) ----------------
     "M-01": "Entities from different sources describe the same thing and were "
             "merged: the same company or institution, and dates that overlap "
@@ -64,6 +72,11 @@ RULE_DESCRIPTIONS: dict[str, str] = {
     "R-10": "An entity could equally be either of several entities from "
             "another source, so nothing was merged and a person decides which "
             "of them it is.",
+    "M-04": "Two or more different sources state the same value, so the "
+            "agreement itself raised its confidence: the highest of their "
+            "scores plus 0.05, capped at 1.00, added once however many "
+            "sources agree. Two mentions inside one source are not "
+            "agreement.",
 
     # --- conflict resolution (FR-031 to FR-034) -------------------------
     "C-00": "Every source agreed on this value.",

@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.domain.entities.field_record import FieldRecord, ReviewReason
+from app.domain.services.confidence import ConfidenceParts, EvidenceGrade
 from app.domain.services.skills import SkillCatalog
 
 #: FR-056: a vetting level outside this range is not a level.
@@ -166,9 +167,11 @@ class VettingParser:
                 field_name: str, raw_value: Any, value: Any = None) -> FieldRecord:
         """A field record for a value the platform produced itself.
 
-        Confidence is 1.0 and the evidence is the payload entry: there is no
-        document to quote and nothing was inferred, so the audit trail points
-        at the vetting result instead of a snippet (FR-065).
+        Confidence is 1.00 and every confidence factor is 1.00: the platform
+        produced this value itself, so there is no text layer to doubt, no
+        snippet to match, no repair and no table lookup. The evidence is the
+        payload entry, because there is no document to quote and nothing was
+        inferred, so the audit trail points at the vetting result (FR-065).
         """
         return FieldRecord(
             field_id=next(self._ids),
@@ -181,9 +184,10 @@ class VettingParser:
             confidence=1.0,
             evidence=json.dumps({field_name: raw_value}, ensure_ascii=False),
             page=None,
-            evidence_status="not_required",
+            evidence_status=EvidenceGrade.NOT_REQUIRED,
             rule=VETTING_RULE,
             source_kind="vetting",
+            confidence_parts=ConfidenceParts(),
         )
 
     @staticmethod

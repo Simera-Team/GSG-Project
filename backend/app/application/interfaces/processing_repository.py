@@ -54,6 +54,10 @@ class IProcessingRepository(ABC):
         """Insert field records; returns {local field_id: stored field_id}."""
 
     @abstractmethod
+    def save_rejected_values(self, attempt_id: int, rejected: list) -> None:
+        """Store the values an R- rule dropped, with the attempt that read them."""
+
+    @abstractmethod
     def replace_open_reviews(self, profile_id: int, file_id: int, items: list[ReviewItem],
                              field_id_map: dict[int, int], conflicts_only: bool = False) -> None:
         """Replace the file's unresolved review items (resolved ones are kept)."""

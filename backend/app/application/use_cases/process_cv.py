@@ -34,6 +34,7 @@ from app.application.services.cv_processing_service import (
 from app.application.services.profile_builder import ProfileBuilder
 from app.application.services.profile_rebuild_service import ProfileRebuildService
 from app.application.services.vetting_parser import VettingParser, VettingPayloadError
+from app.domain.services.confidence import DEFAULT_REVIEW_CONFIDENCE
 from app.domain.entities.field_record import (
     ReviewItem,
     ReviewReason,
@@ -54,7 +55,7 @@ class ProcessCVUseCase:
 
     def __init__(self, repository: IProcessingRepository, catalogs: ICatalogRepository,
                  reader: IDocumentReader, ai_client: IAIClient, unit_of_work: IUnitOfWork,
-                 confidence_threshold: float = 0.65, max_attempts: int = 3,
+                 confidence_threshold: float = DEFAULT_REVIEW_CONFIDENCE, max_attempts: int = 3,
                  retry_base_seconds: float = 2.0,
                  sleep: Callable[[float], None] = time.sleep):
         self.repo = repository
@@ -125,7 +126,8 @@ class ProcessCVUseCase:
 
         attempt = self._vetting_attempt(started, AttemptOutcome.VALID, None,
                                         response=document.text)
-        built = ProfileBuilder().build(parsed.records)
+        built = ProfileBuilder(
+            confidence_threshold=self.confidence_threshold).build(parsed.records)
         review_items = list(built.review_items)
 
         if built.profile is None:
@@ -168,8 +170,15 @@ class ProcessCVUseCase:
         valid = next((i for i, a in enumerate(result.attempts)
                       if a.outcome == AttemptOutcome.VALID), None)
         id_map: dict[int, int] = {}
-        if valid is not None and result.field_records:
-            id_map = self.repo.save_field_records(file_id, attempt_ids[valid], result.field_records)
+        if valid is not None:
+            if result.field_records:
+                id_map = self.repo.save_field_records(file_id, attempt_ids[valid],
+                                                      result.field_records)
+            # R-03: values that were not in the document. Stored with the
+            # attempt that produced them so a drop stays auditable (NFR-028),
+            # never as a review item - there is nothing to decide.
+            if result.rejected:
+                self.repo.save_rejected_values(attempt_ids[valid], result.rejected)
 
         file_items = [i for i in result.review_items
                       if not is_cross_source(i.reasons)]
@@ -180,7 +189,8 @@ class ProcessCVUseCase:
             # FR-036: the live profile always comes from the stored field records
             # of every source of this candidate, not just this file.
             self.repo.set_change_context(None, "auto_merge", file_id)   # FR-037
-            built = ProfileRebuildService(self.repo).rebuild(profile_id, file_id)
+            built = ProfileRebuildService(
+                self.repo, self.confidence_threshold).rebuild(profile_id, file_id)
             if built.profile is None:
                 status = JobStatus.FAILED
             elif status == JobStatus.DONE and built.review_items:

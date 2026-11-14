@@ -37,6 +37,14 @@ def make_service(ai, waits=None):
 
 DOC = ExtractedDocument(source_name="rana.docx", text=CV_TEXT)
 
+#: The same CV as a scan the OCR engine was unsure of, which is what the
+#: confidence model reads as uncertainty now (FR-018, FR-048).
+SCAN = ExtractedDocument(
+    source_name="rana.pdf", text=CV_TEXT, page_texts=[CV_TEXT],
+    extraction_method="ocr", ocr_confidence=0.5,
+    page_ocr_confidence=[0.5], page_text_layers=[""],
+)
+
 
 def test_valid_first_try_builds_profile_from_field_records():
     result = make_service(FakeAI(as_json(answer()))).process(DOC)
@@ -80,20 +88,32 @@ def test_unknown_country_left_empty_and_queued():
     assert any(ReviewReason.UNKNOWN_COUNTRY in r.reasons for r in result.review_items)
 
 
-def test_value_without_evidence_in_text_is_flagged():
+def test_value_without_evidence_in_text_is_rejected():
+    """R-03: a value that is not in the document is dropped, not queued. There
+    is nothing for a person to decide, so it becomes no field record and no
+    review item - only an entry on the attempt's rejected list (NFR-028)."""
     data = answer()
     data["personal_info"]["city"] = f("Dubai", "Dubai, UAE")       # not in the CV
     result = make_service(FakeAI(as_json(data))).process(DOC)
+
     assert result.profile.personal_info.city is None
-    assert any(ReviewReason.EVIDENCE_NOT_FOUND in r.reasons for r in result.review_items)
+    assert not [r for r in result.field_records if r.field_name == "city"]
+    assert not [i for i in result.review_items if i.field_name == "city"]
+    assert [r.raw_value for r in result.rejected if r.field_name == "city"] == ["Dubai"]
+    assert all(r.reason == "R-03" for r in result.rejected)
 
 
 def test_low_confidence_is_flagged():
+    """What makes a value uncertain is the page it was read from, not what the
+    model said about itself: the same answer off a 0.50 scan is held back."""
     data = answer()
-    data["personal_info"]["last_name"] = f("Odeh", "Rana Odeh", confidence=0.4)
-    result = make_service(FakeAI(as_json(data))).process(DOC)
+    data["personal_info"]["last_name"] = f("Odeh", "Rana Odeh", confidence=0.99)
+    result = make_service(FakeAI(as_json(data))).process(SCAN)
+
     assert result.profile.personal_info.last_name is None
     assert any(ReviewReason.LOW_CONFIDENCE in r.reasons for r in result.review_items)
+    held = next(r for r in result.field_records if r.field_name == "last_name")
+    assert (held.confidence, held.model_confidence) == (0.5, 0.99)
 
 
 def test_invalid_then_valid_retries_with_increasing_wait():

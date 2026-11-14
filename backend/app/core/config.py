@@ -1,6 +1,8 @@
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.domain.services.confidence import DEFAULT_REVIEW_CONFIDENCE
+
 
 class Settings(BaseSettings):
     DATABASE_URL: str
@@ -20,10 +22,11 @@ class Settings(BaseSettings):
     # OCR threads: on laptops with fast + slow cores, 4 measured ~40% faster than all cores
     OCR_THREADS: int = 4
 
-    # Fields below this confidence go to human review (FR-046, default 0.65)
+    # Fields below this confidence go to human review (FR-046, default 0.65).
     # Fallback only: the limit in force is the stored setting an administrator
-    # can change (FR-046, FR-067). Used when no row exists yet.
-    REVIEW_CONFIDENCE_THRESHOLD: float = 0.65
+    # can change (FR-046, FR-067). Used when no row exists yet. The number
+    # lives with the confidence model that is compared against it.
+    REVIEW_CONFIDENCE_THRESHOLD: float = DEFAULT_REVIEW_CONFIDENCE
 
     model_config = SettingsConfigDict(
         env_file=".env",

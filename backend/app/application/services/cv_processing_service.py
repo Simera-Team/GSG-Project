@@ -32,7 +32,13 @@ from app.application.services.field_record_builder import (
 from app.application.services.llm_output_validator import ValidationResult, validate_llm_output
 from app.application.services.profile_builder import ProfileBuilder
 from app.core.exceptions import LLMProviderError
-from app.domain.entities.field_record import FieldRecord, ReviewItem, ReviewReason
+from app.domain.services.confidence import DEFAULT_REVIEW_CONFIDENCE
+from app.domain.entities.field_record import (
+    FieldRecord,
+    RejectedValue,
+    ReviewItem,
+    ReviewReason,
+)
 from app.domain.entities.processing_attempt import (
     AttemptLog,
     AttemptOutcome,
@@ -58,6 +64,9 @@ class ProcessingResult:
     review_items: list[ReviewItem] = field(default_factory=list)
     profile: ProfileDocument | None = None
     confidence_threshold: float | None = None   # the limit this job used (FR-067)
+    # Values dropped by an R- rule: not field records and not review items,
+    # but kept so a drop can be audited (R-03, NFR-028).
+    rejected: list[RejectedValue] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -67,6 +76,7 @@ class ProcessingResult:
             "attempts": [a.to_dict() for a in self.attempts],
             "review_items": [r.to_dict() for r in self.review_items],
             "field_records": [r.to_dict() for r in self.field_records],
+            "rejected": [r.to_dict() for r in self.rejected],
             "profile": self.profile.model_dump(mode="json") if self.profile else None,
         }
 
@@ -74,7 +84,7 @@ class ProcessingResult:
 class CVProcessingService:
 
     def __init__(self, ai_client: IAIClient, countries: CountryCatalog,
-                 skills: SkillCatalog, confidence_threshold: float = 0.65,
+                 skills: SkillCatalog, confidence_threshold: float = DEFAULT_REVIEW_CONFIDENCE,
                  max_attempts: int = 3, retry_base_seconds: float = 2.0,
                  sleep: Callable[[float], None] = time.sleep):
         self.ai_client = ai_client
@@ -107,8 +117,9 @@ class CVProcessingService:
             self.countries, self.skills,
             FieldRecordSettings(confidence_threshold=self.confidence_threshold),
         )
-        records = builder.build(validation.extraction, document)
-        built = ProfileBuilder(review_ids).build(records)
+        extracted = builder.build(validation.extraction, document)
+        records = extracted.records
+        built = ProfileBuilder(review_ids, self.confidence_threshold).build(records)
 
         if built.profile is None:
             status, reason = JobStatus.FAILED, "Built profile failed the Simera profile format"
@@ -118,7 +129,8 @@ class CVProcessingService:
             status, reason = JobStatus.DONE, None
 
         return ProcessingResult(status, reason, log.attempts, records,
-                                built.review_items, built.profile, self.confidence_threshold)
+                                built.review_items, built.profile,
+                                self.confidence_threshold, extracted.rejected)
 
     def _run_attempts(self, document, first_trigger, log: AttemptLog):
         prompt = build_user_prompt(document.text, document.hyperlinks,

@@ -170,7 +170,9 @@ def test_resolving_a_conflict_updates_profile_and_history(client, db, tmp_path, 
 def test_custom_value_goes_through_the_date_rules(client, db, tmp_path, reviewer):
     profile_id, [file_id] = make_profile(db, tmp_path, {"cv.md": CV_TEXT})
     data = answer()
-    data["work_experience"][0]["start_date"] = f("June 2023", "June 2023 - Present", confidence=0.3)
+    # A worn evidence snippet (similarity 0.80) scores the field 0.60, under
+    # the 0.65 limit, which is what puts it in the queue to be resolved.
+    data["work_experience"][0]["start_date"] = f("June 2023", "June 2023 - Present, 6 mo")
     process(db, file_id, data)
     item = find(items(client, reviewer[0]), "start_date", "low_confidence")
     url = f"/api/v1/review/items/{item['review_id']}/resolve"
@@ -186,7 +188,7 @@ def test_custom_value_goes_through_the_date_rules(client, db, tmp_path, reviewer
 def test_reject_leaves_the_field_empty(client, db, tmp_path, reviewer):
     profile_id, [file_id] = make_profile(db, tmp_path, {"cv.md": CV_TEXT})
     data = answer()
-    data["personal_info"]["last_name"] = f("Odeh", "Rana Odeh", confidence=0.4)
+    data["personal_info"]["last_name"] = f("Odeh", "Rana Odeh, MSc")   # 0.60: see above
     process(db, file_id, data)
     item = find(items(client, reviewer[0]), "last_name")
 

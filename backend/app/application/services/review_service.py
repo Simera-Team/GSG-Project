@@ -26,6 +26,7 @@ from app.application.interfaces.processing_repository import (
 from app.application.interfaces.review_repository import IReviewRepository
 from app.application.interfaces.unit_of_work import IUnitOfWork
 from app.application.services.profile_rebuild_service import ProfileRebuildService
+from app.domain.services.confidence import DEFAULT_REVIEW_CONFIDENCE
 from app.core.exceptions import ReviewInputError, ReviewNotFoundError, ReviewStateError
 from app.domain.entities.user import User
 from app.domain.services.dates import parse_date
@@ -41,11 +42,16 @@ EMAIL_RE = re.compile(r"^[\w.+-]+@[\w-]+(\.[\w-]+)+$")
 class ReviewService:
 
     def __init__(self, reviews: IReviewRepository, processing: IProcessingRepository,
-                 catalogs: ICatalogRepository, unit_of_work: IUnitOfWork):
+                 catalogs: ICatalogRepository, unit_of_work: IUnitOfWork,
+                 confidence_threshold: float = DEFAULT_REVIEW_CONFIDENCE):
         self.reviews = reviews
         self.processing = processing
         self.catalogs = catalogs
         self.uow = unit_of_work
+        # FR-046/FR-067: the limit an administrator set. A rebuild applies the
+        # agreement boost (M-04), which can clear a low-confidence flag, so it
+        # has to measure against the same limit the processing job used.
+        self.confidence_threshold = confidence_threshold
 
     # ---- queue (FR-041, FR-042) ----
 
@@ -104,7 +110,8 @@ class ReviewService:
             # FR-037: profile column changes are logged by the database trigger
             # with this reviewer and reason; other fields are logged here.
             self.processing.set_change_context(reviewer.user_id, "review_decision", file_id)
-            ProfileRebuildService(self.processing).rebuild(item.profile_id, item.file_id)
+            ProfileRebuildService(self.processing, self.confidence_threshold).rebuild(
+                item.profile_id, item.file_id)
             if entity_type != "personal_info":
                 old = item.options[0].value if item.options else None
                 self.reviews.log_change(item.profile_id, file_id,

@@ -1,22 +1,50 @@
 """Turn a validated LLM answer into field records (FR-035, FR-060).
 
-For every value: check evidence (NFR-028), check confidence against the
-review limit (FR-041, NFR-027), normalise it with fixed code rules
-(dates FR-028, countries FR-070, skills FR-029), and mark it for review
-when any check fails. A flagged value is kept as a field record (nothing
-is lost) but is not used in the live profile (FR-040).
+For every value: check its evidence against the source text (NFR-028),
+normalise it with fixed code rules (dates FR-028, countries FR-070, skills
+FR-029), compute its confidence from the four factors in
+:mod:`app.domain.services.confidence`, and compare that with the review limit
+(FR-041, NFR-027).
+
+There are three outcomes, and the difference between them matters:
+
+* **accepted** — the value is in the document and scored at or above the limit.
+* **flagged** — the value is in the document but something about it needs a
+  person: an unreadable date, an unknown skill, a score under the limit. It is
+  kept as a field record, so nothing is lost, but stays out of the live
+  profile until someone decides (FR-040, FR-041).
+* **rejected** — the value is *not* in the document. There is nothing to
+  decide, so it becomes no field record and no review item; it goes on the
+  attempt's rejected list with rule ``R-03`` so the drop can still be audited.
+
+The confidence a value ends up with is computed here, never taken from the
+model: ``field.confidence`` is stored untouched as ``model_confidence`` for
+comparison and is read by nothing.
 """
 
 import itertools
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 from pydantic import BaseModel
 
 from app.application.dto.cv_extraction import CVExtraction, FlagField, Link
 from app.application.dto.extracted_document import ExtractedDocument
 from app.application.services.evidence_checker import EvidenceChecker
-from app.domain.entities.field_record import FieldRecord, ReviewReason
+from app.domain.entities.field_record import (
+    FieldRecord,
+    RejectedValue,
+    ReviewReason,
+)
+from app.domain.services.confidence import (
+    DEFAULT_REVIEW_CONFIDENCE,
+    ConfidenceParts,
+    ConfidenceRule,
+    EvidenceGrade,
+    mapping_factor,
+    page_base_factor,
+    validation_factor,
+)
 from app.domain.services.contacts import (
     ContactRule,
     normalize_email,
@@ -35,14 +63,9 @@ from app.domain.services.dates import (
     repair_date_order,
 )
 from app.domain.services.skills import (
-    FUZZY_MAPPING_FACTOR,
     SkillCatalog,
     SkillRule,
 )
-
-#: Confidence factor for a date whose day/month order was ambiguous: the year
-#: is certain but the month was dropped (N-DATE-03).
-AMBIGUOUS_DATE_VALIDATION_FACTOR = 0.80
 
 DATE_FIELDS = {"start_date", "end_date", "issue_date"}
 URL_FIELDS = {"url"}
@@ -59,7 +82,37 @@ ENTITY_LISTS = ["work_experience", "education", "skills", "certifications",
 
 @dataclass
 class FieldRecordSettings:
-    confidence_threshold: float = 0.65    # FR-046 default review limit
+    confidence_threshold: float = DEFAULT_REVIEW_CONFIDENCE   # FR-046 review limit
+
+
+@dataclass
+class _Repairs:
+    """What one value's normalisation had to do to it.
+
+    The two confidence factors the rules can lower are decided by what
+    happened, not by the rule id alone: a phone number cites N-PHONE-01
+    whether or not a country had to be borrowed for it, and only the borrowed
+    case is a repair.
+    """
+
+    repaired: bool = False     # a listed repair ran (N-DATE-03/05, N-PHONE-01)
+    fuzzy: bool = False        # matched a reference table only fuzzily
+
+    def parts(self, base: float, evidence: float) -> ConfidenceParts:
+        return ConfidenceParts(
+            base=base,
+            evidence=evidence,
+            validation=validation_factor(self.repaired),
+            mapping=mapping_factor(self.fuzzy),
+        )
+
+
+@dataclass
+class ExtractionOutcome:
+    """What one source produced: records to keep, and values that were dropped."""
+
+    records: list[FieldRecord] = field(default_factory=list)
+    rejected: list[RejectedValue] = field(default_factory=list)
 
 
 class FieldRecordBuilder:
@@ -73,37 +126,33 @@ class FieldRecordBuilder:
         self._ids = id_counter or itertools.count(1)
         self._profile_country: str | None = None
 
-    def build(self, extraction: CVExtraction, document: ExtractedDocument) -> list[FieldRecord]:
-        checker = EvidenceChecker(
-            document.text, document.page_texts, document.hyperlinks,
-            allow_fuzzy=document.extraction_method in ("ocr", "mixed"),
-        )
-        low_ocr = (document.ocr_confidence is not None
-                   and document.ocr_confidence < self.settings.confidence_threshold)
-
-        records: list[FieldRecord] = []
+    def build(self, extraction: CVExtraction,
+              document: ExtractedDocument) -> ExtractionOutcome:
+        checker = EvidenceChecker(document.text, document.page_texts,
+                                  document.hyperlinks)
+        outcome = ExtractionOutcome()
 
         # The phone rule needs a country before it can turn a local number into
         # E.164, and the personal fields are processed in schema order, where
         # phone comes before country. So the country is resolved up front.
         self._profile_country = self._resolve_profile_country(extraction.personal_info)
 
-        self._add_entity(records, extraction.personal_info, "personal_info",
-                         "personal_info", document, checker, low_ocr)
-        self._add_inferred_country(records, extraction.personal_info, document,
-                                   checker, low_ocr)
+        self._add_entity(outcome, extraction.personal_info, "personal_info",
+                         "personal_info", document, checker)
+        self._add_inferred_country(outcome, extraction.personal_info, document,
+                                   checker)
 
         for entity_type in ENTITY_LISTS:
             entities = getattr(extraction, entity_type)
             if entity_type == "skills":
                 entities = self._expand_combined_skills(entities)
             for index, entity in enumerate(entities, start=1):
-                self._add_entity(records, entity, f"{entity_type}[{index}]",
-                                 entity_type, document, checker, low_ocr)
+                self._add_entity(outcome, entity, f"{entity_type}[{index}]",
+                                 entity_type, document, checker)
 
-        self._check_current_jobs(records)
-        self._repair_reversed_dates(records)
-        return records
+        self._check_current_jobs(outcome.records)
+        self._repair_reversed_dates(outcome.records)
+        return outcome
 
     def _resolve_profile_country(self, personal_info) -> str | None:
         """The candidate's country code, from what the CV states or from its city.
@@ -116,8 +165,8 @@ class FieldRecordBuilder:
             return stated.code
         return infer_country_code_from_city(personal_info.city.value)
 
-    def _add_inferred_country(self, records, personal_info, document,
-                              checker, low_ocr) -> None:
+    def _add_inferred_country(self, outcome, personal_info, document,
+                              checker) -> None:
         """Record a country inferred from the city when none was stated (N-GEO-02).
 
         Most CVs give a city and no country, so without this the profile has no
@@ -141,8 +190,18 @@ class FieldRecordBuilder:
         if country is None:
             return
 
+        # The country is read from the city's own text, so it exists only if the
+        # city did: a city whose snippet was not in the document has already
+        # been rejected, and inferring from it would reject the same snippet a
+        # second time for a value the model never offered.
+        if not any(r.field_name == "city" and r.entity_type == "personal_info"
+                   and r.value is not None for r in outcome.records):
+            return
+
         record = self._record(city_field, "personal_info", "personal_info",
-                             "country", document, checker, low_ocr)
+                              "country", document, checker, outcome)
+        if record is None:
+            return
         record.value = country.to_dict()
         record.rule = GeoRule.INFERRED_FROM_CITY
         record.note = f"Country inferred from the city {city_field.value!r}"
@@ -150,7 +209,10 @@ class FieldRecordBuilder:
         # null original does not apply to the inferred value.
         record.review_reasons = [r for r in record.review_reasons
                                  if r != ReviewReason.UNKNOWN_COUNTRY]
-        records.append(record)
+        # N-GEO-02 is a fuzzy table match: the city identifies the country, but
+        # the source never stated it, so it is not worth an exact read.
+        self._rescore(record, mapping=mapping_factor(True))
+        outcome.records.append(record)
 
     def _expand_combined_skills(self, skills: list) -> list:
         """One entry naming two skills becomes two entities (N-SKILL-02, FR-060).
@@ -194,6 +256,10 @@ class FieldRecordBuilder:
                 continue
             start.value, end.value = new_start.to_dict(), new_end.to_dict()
             start.rule = end.rule = DateRule.SWAPPED
+            # N-DATE-05 is a repair: the pair is right only if the swap was the
+            # correct reading of a source that contradicted itself.
+            for record in (start, end):
+                self._rescore(record, validation=validation_factor(True))
 
     @staticmethod
     def _check_current_jobs(records: list[FieldRecord]) -> None:
@@ -207,25 +273,35 @@ class FieldRecordBuilder:
             if current and current.value is True and end and isinstance(end.value, dict):
                 end.review_reasons.append(ReviewReason.CURRENT_JOB_CONFLICT)
 
-    def _add_entity(self, records, entity: BaseModel, entity_label, entity_type,
-                    document, checker, low_ocr):
+    def _add_entity(self, outcome, entity: BaseModel, entity_label, entity_type,
+                    document, checker):
         for name in type(entity).model_fields:
             value = getattr(entity, name)
             if isinstance(entity, Link) and name == "type":
                 continue  # stored together with the url record below
             if isinstance(value, list):     # e.g. project tech_stack
                 for i, item in enumerate(value, start=1):
-                    records.append(self._record(item, entity_label, entity_type,
-                                                f"{name}[{i}]", document, checker, low_ocr))
+                    record = self._record(item, entity_label, entity_type,
+                                          f"{name}[{i}]", document, checker, outcome)
+                    if record is not None:
+                        outcome.records.append(record)
                 continue
             record = self._record(value, entity_label, entity_type, name,
-                                  document, checker, low_ocr)
+                                  document, checker, outcome)
+            if record is None:
+                continue
             if isinstance(entity, Link):
                 record.value = {"type": entity.type, "url": record.value}
-            records.append(record)
+            outcome.records.append(record)
 
     def _record(self, field, entity_label, entity_type, field_name,
-                document, checker, low_ocr) -> FieldRecord:
+                document, checker, outcome) -> FieldRecord | None:
+        """One field record, or ``None`` when the value was rejected (R-03).
+
+        A rejection is appended to ``outcome.rejected`` rather than returned,
+        because the caller has nothing to do with a value that is not in the
+        document.
+        """
         raw = field.value
         record = FieldRecord(
             field_id=next(self._ids),
@@ -235,47 +311,77 @@ class FieldRecordBuilder:
             field_name=field_name,
             raw_value=raw,
             value=raw,
-            confidence=field.confidence,
+            confidence=1.0,
             evidence=field.evidence,
             page=field.page,
-            evidence_status="not_required",
+            evidence_status=EvidenceGrade.NOT_REQUIRED,
             rule="llm_extraction",
+            confidence_parts=ConfidenceParts(),
+            # Stored for comparison only; it is not in the formula (FR-048).
+            model_confidence=field.confidence,
         )
 
         # FR-026: a missing value is saved as null and needs no evidence.
         # is_current=false is the "nothing stated" default for the same reason.
+        # Nothing was read, so there is nothing to be less than certain about.
         if raw is None or (isinstance(field, FlagField) and raw is False):
             return record
 
-        reasons = record.review_reasons
-
-        # NFR-028: evidence must exist in the source text.
+        # NFR-028: the snippet must exist in the source text and support the
+        # value. A value that fails is not in the document, so it is dropped
+        # under R-03 instead of being stored at a low score (FR-065).
         check = checker.check(raw, field.evidence, field.page,
                               check_value=field_name not in INTERPRETED_FIELDS)
+        if not check.ok:
+            outcome.rejected.append(RejectedValue(
+                entity=entity_label, entity_type=entity_type, field_name=field_name,
+                raw_value=raw, reason=ConfidenceRule.EVIDENCE_REJECTED,
+                detail=check.detail, evidence=field.evidence, page=field.page,
+            ))
+            return None
+
         record.evidence_status = check.status
         record.page = check.page
-        if check.status == "missing":
-            reasons.append(ReviewReason.EVIDENCE_MISSING)
-        elif check.status == "not_found":
-            reasons.append(ReviewReason.EVIDENCE_NOT_FOUND)
-        elif not check.value_supported:
-            reasons.append(ReviewReason.VALUE_NOT_IN_EVIDENCE)
 
-        # Normalisation can lower the confidence (a corrected spelling or an
-        # ambiguous date is less certain than an exact read), so it runs before
-        # the limit is applied: otherwise a value knocked below the limit would
-        # still count as accepted.
-        self._normalise(record, entity_type, field_name)
+        # Normalisation decides the validation and mapping factors, so it runs
+        # before the score: otherwise a value knocked below the limit by a
+        # repair would still count as accepted.
+        repairs = _Repairs()
+        self._normalise(record, entity_type, field_name, repairs)
 
-        # FR-041 / NFR-027 / FR-018
+        base = page_base_factor(document.page_confidence(record.page, field.evidence))
+        record.confidence_parts = repairs.parts(base, check.factor)
+        record.confidence = record.confidence_parts.confidence
+
+        # FR-041 / NFR-027: below the limit a person looks at it. A page read
+        # by OCR carries its own quality in `base`, so a poor scan reaches this
+        # line already scored down (FR-018) — no separate flag is needed, and
+        # the stored parts say which factor was responsible.
         if record.confidence < self.settings.confidence_threshold:
-            reasons.append(ReviewReason.LOW_CONFIDENCE)
-        if low_ocr:
-            reasons.append(ReviewReason.LOW_OCR_CONFIDENCE)
+            record.review_reasons.append(ReviewReason.LOW_CONFIDENCE)
 
         return record
 
-    def _normalise(self, record: FieldRecord, entity_type: str, field_name: str) -> None:
+    def _rescore(self, record: FieldRecord, **factors) -> None:
+        """Recompute a record's confidence after one factor changed.
+
+        Used by the rules that only learn what they did after the record
+        exists: a country read from a city, and a reversed date pair that can
+        only be spotted once both dates are built.
+        """
+        parts = replace(record.confidence_parts or ConfidenceParts(), **factors)
+        record.confidence_parts = parts
+        record.confidence = parts.confidence
+
+        was_low = ReviewReason.LOW_CONFIDENCE in record.review_reasons
+        now_low = record.confidence < self.settings.confidence_threshold
+        if now_low and not was_low:
+            record.review_reasons.append(ReviewReason.LOW_CONFIDENCE)
+        elif was_low and not now_low:
+            record.review_reasons.remove(ReviewReason.LOW_CONFIDENCE)
+
+    def _normalise(self, record: FieldRecord, entity_type: str, field_name: str,
+                   repairs: "_Repairs") -> None:
         raw = record.raw_value
 
         if field_name in DATE_FIELDS:
@@ -288,7 +394,7 @@ class FieldRecordBuilder:
                     # certain, so the year is kept at year precision. Nobody is
                     # asked: the rule is deterministic and nothing is guessed;
                     # only the lost month shows up in the confidence.
-                    record.confidence *= AMBIGUOUS_DATE_VALIDATION_FACTOR
+                    repairs.repaired = True
             elif result.kind == "current" and field_name == "end_date":
                 record.value = "current"
                 record.rule = DateRule.CURRENT_MARKER
@@ -319,7 +425,7 @@ class FieldRecordBuilder:
             if fuzzy:
                 record.value = fuzzy
                 record.rule = SkillRule.FUZZY
-                record.confidence *= FUZZY_MAPPING_FACTOR
+                repairs.fuzzy = True
                 record.note = f"Read as {fuzzy!r}; the source wrote {raw.strip()!r}"
                 return
 
@@ -349,6 +455,10 @@ class FieldRecordBuilder:
                 record.value = phone.e164
                 record.rule = ContactRule.PHONE
                 if phone.borrowed_country:
+                    # N-PHONE-01 as a repair: the source gave a local number and
+                    # the dial code came from elsewhere on the page, so the
+                    # number is right only if that country is.
+                    repairs.repaired = True
                     record.note = ("Country code taken from the profile country "
                                    f"{phone.borrowed_country}")
             else:

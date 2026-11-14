@@ -104,6 +104,17 @@ def test_processing_saves_attempts_fields_reviews_and_profile(db, tmp_path):
                             "FROM profile_skill ps JOIN skill s USING (skill_id)")).one()
     assert skill[0] == "React" and skill[1] == [file_id] and set(skill[2]) <= stored
 
+    # FR-048: the stored confidence is explainable from its stored parts, and
+    # the model's own number is kept next to it without being used.
+    scores = db.execute(text("SELECT confidence, confidence_parts, model_confidence "
+                             "FROM extracted_field WHERE value IS NOT NULL")).all()
+    assert scores
+    for confidence, parts, model_confidence in scores:
+        product = (parts["base"] * parts["evidence"]
+                   * parts["validation"] * parts["mapping"])
+        assert round(product + parts.get("agreement", 0.0), 2) == pytest.approx(confidence)
+        assert model_confidence is not None
+
     # unknown skill queued with its evidence and field record
     review = db.execute(text(
         "SELECT r.field_name, r.reasons, o.value, o.evidence, o.field_id FROM review_item r "

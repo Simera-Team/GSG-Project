@@ -49,9 +49,9 @@ class SkillRule:
 #: every name is one edit from another one ("Go" / "God", "C#" / "C").
 FUZZY_MIN_LENGTH = 5
 
-#: Confidence factor applied to a value reached by a fuzzy match, so a
-#: corrected spelling is never as certain as an exact one (N-SKILL-03).
-FUZZY_MAPPING_FACTOR = 0.85
+#: The confidence factor a fuzzy match costs lives with the rest of the
+#: confidence model, in :mod:`app.domain.services.confidence`
+#: (``FUZZY_MAPPING_FACTOR``), so every factor is written down in one place.
 
 
 SUGGEST_CUTOFF = 0.8

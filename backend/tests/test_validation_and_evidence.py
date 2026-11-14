@@ -76,12 +76,30 @@ def test_missing_evidence():
     assert EvidenceChecker(TEXT).check("Sara", None, None).status == "missing"
 
 
-def test_fuzzy_match_only_for_ocr():
+def test_a_near_quote_is_graded_on_every_page_not_only_a_scan():
+    """A model drops a comma or straightens a dash on any page, and rejecting
+    those values lost correct data. The difference is priced instead: the grade
+    becomes the `evidence` confidence factor."""
     ocr_text = "Boeing 737 FNPT Il simulator (40 hours)"
     snippet = "Boeing 737 FNPT II simulator (40 hours)"
-    assert EvidenceChecker(ocr_text).check(None, snippet, None).status == "not_found"
-    assert EvidenceChecker(ocr_text, allow_fuzzy=True).check(
-        None, snippet, None).status == "verified_fuzzy"
+    check = EvidenceChecker(ocr_text).check(None, snippet, None)
+    assert check.status == "verified_fuzzy"
+    assert check.similarity >= 0.90 and check.factor == 0.85
+
+
+def test_a_worn_quote_is_kept_at_a_lower_grade():
+    long_text = "Rana Odeh | Amman, Jordan 11942 | rana.odeh@example.com"
+    check = EvidenceChecker(long_text).check("Amman", "Amman, Jordan 11942 PO Box", None)
+    assert check.status == "verified_weak"
+    assert 0.75 <= check.similarity < 0.90 and check.factor == 0.60
+
+
+def test_a_snippet_mostly_absent_from_the_text_is_rejected():
+    """Under 0.75 the snippet is not really in the document, which no score can
+    express, so the value is dropped under R-03 instead (NFR-028)."""
+    check = EvidenceChecker(TEXT).check("Dubai", "Dubai, United Arab Emirates", None)
+    assert check.status == "not_found"
+    assert check.similarity < 0.75 and not check.ok
 
 
 def test_page_is_corrected_to_where_snippet_is():

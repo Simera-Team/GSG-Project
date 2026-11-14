@@ -28,14 +28,17 @@ SUPPORTED = {".pdf", ".docx", ".md"}
 
 def to_document(path: Path) -> ExtractedDocument:
     result = get_extractor(path.suffix).extract(path.read_bytes())
+    # Page markers only make sense for real pages (PDF).
+    pages = result.pages if path.suffix.lower() == ".pdf" else []
     return ExtractedDocument(
         source_name=path.name,
         text=result.text,
-        # Page markers only make sense for real pages (PDF).
-        page_texts=[p.text for p in result.pages] if path.suffix.lower() == ".pdf" else [],
+        page_texts=[p.text for p in pages],
         hyperlinks=result.hyperlinks,
         extraction_method=result.method,
         ocr_confidence=result.ocr_confidence,
+        page_ocr_confidence=[p.ocr_confidence for p in pages],
+        page_text_layers=[p.text_layer or "" for p in pages],
     )
 
 

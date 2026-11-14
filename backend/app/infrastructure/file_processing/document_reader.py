@@ -22,11 +22,16 @@ class StoredDocumentReader(IDocumentReader):
         content = (self.storage.read(source_file.storage_path) if self.storage
                    else path.read_bytes())
         result = get_extractor(path.suffix).extract(content)
+        pages = result.pages if path.suffix.lower() == ".pdf" else []
         return ExtractedDocument(
             source_name=str(source_file.file_id),
             text=result.text,
-            page_texts=[p.text for p in result.pages] if path.suffix.lower() == ".pdf" else [],
+            page_texts=[p.text for p in pages],
             hyperlinks=result.hyperlinks,
             extraction_method=result.method,
             ocr_confidence=result.ocr_confidence,
+            # Per page, so a value's confidence is the quality of the page it
+            # was read from and not of the file it arrived in.
+            page_ocr_confidence=[p.ocr_confidence for p in pages],
+            page_text_layers=[p.text_layer or "" for p in pages],
         )

@@ -91,12 +91,12 @@ Not AI, but the AI is only ever as good as this. All of it is in
 
 | File | Lines | What it does |
 |---|---|---|
-| `base_extractor.py` | 30 | The shape every extractor returns: `text`, `pages`, `hyperlinks`, `method`, `ocr_confidence`, `page_count`. |
+| `base_extractor.py` | 35 | The shape every extractor returns: `text`, `pages`, `hyperlinks`, `method`, `ocr_confidence`, `page_count`. Each page also carries its own `ocr_confidence` and its `text_layer`, which the confidence model needs per page (stage 4b). |
 | `extractor_factory.py` | 18 | `get_extractor(".pdf")` → the right class. The one place a format maps to an extractor. |
 | `pdf_extractor.py` | 121 | PyMuPDF text layer, per page. A page with no readable text is handed to OCR (FR-017). Collects header/footer text (FR-016) and link targets behind clickable words. |
 | `docx_extractor.py` | 66 | Word CVs via `python-docx`, keeping section structure (FR-054). |
 | `markdown_extractor.py` | 13 | LinkedIn `.md` exports — the text is already text (FR-019). |
-| `ocr_engine.py` | 194 | RapidOCR for scanned pages. Tries orientation fixes and contrast enhancement when confidence is low, and returns a mean confidence 0–1 which is stored on the source (FR-018). |
+| `ocr_engine.py` | 194 | RapidOCR for scanned pages. Tries orientation fixes and contrast enhancement when confidence is low, and returns a mean confidence 0–1. Stored on the source (FR-018) **and per page**, where it becomes the `base` factor of every value read from that page (stage 4b). |
 | `layout.py` | 90 | Turns positioned text boxes into reading order. Finds the vertical gutter in a two-column CV and reads each column top to bottom, so sidebar skills do not land inside work history (FR-015). |
 | `document_reader.py` | 32 | `StoredDocumentReader`: reads the stored original through the storage, extracts, and returns `ExtractedDocument`. This is the seam the use case depends on, as `IDocumentReader`. |
 
@@ -110,7 +110,9 @@ class ExtractedDocument:
     page_texts: list[str] = ...       # empty for DOCX / Markdown
     hyperlinks: list[str] = ...
     extraction_method: str = "text"   # text | ocr | mixed
-    ocr_confidence: float | None = None
+    ocr_confidence: float | None = None       # mean over the pages that needed OCR
+    page_ocr_confidence: list[float | None]   # per page; None for a text page
+    page_text_layers: list[str]               # the text-layer part of each page
 ```
 
 It is a plain dataclass with no extractor imports on purpose: the
@@ -241,7 +243,7 @@ there cannot have a quote proving it.
 This is where most of the logic lives. The LLM's answer becomes field
 records, each checked and normalised.
 
-### `app/domain/entities/field_record.py` (115 lines) — the output contract
+### `app/domain/entities/field_record.py` (179 lines) — the output contract
 
 ```python
 @dataclass
@@ -256,23 +258,27 @@ class FieldRecord:
     confidence: float
     evidence: str | None
     page: int | None
-    evidence_status: str          # verified | verified_fuzzy | missing | not_found
+    evidence_status: str          # verified | verified_fuzzy | verified_weak | ...
     rule: str                     # "N-DATE-01", "C-02", "llm_extraction", ...
     review_reasons: list[str]
     note: str | None              # hint for the reviewer
     source_kind: str = "cv"       # cv | linkedin | vetting
     source_uploaded_at: datetime | None = None
+    confidence_parts: ConfidenceParts | None = None   # why `confidence` is what it is
+    model_confidence: float | None = None             # what the LLM said; read by nothing
 ```
 
 `raw_value` and `value` are both kept, so a normalisation can always be
 audited against what the source actually said. `source_kind` and
 `source_uploaded_at` are what the conflict rules read in stage 5; they are
-filled when records are loaded for a merge.
+filled when records are loaded for a merge. `confidence_parts` is the
+arithmetic behind `confidence` — see stage 4b.
 
 The same file holds `ReviewReason` — the full list of reasons a field can
-need a person — plus `ReviewItem` and `ReviewOption`.
+need a person — plus `ReviewItem`, `ReviewOption` and `RejectedValue`, the
+record of a value an `R-` rule dropped.
 
-### `app/application/services/evidence_checker.py` (101 lines) — hallucination control
+### `app/application/services/evidence_checker.py` (167 lines) — hallucination control
 
 The guard that makes a confident wrong answer survivable (NFR-028). For
 every non-null value:
@@ -280,32 +286,56 @@ every non-null value:
 - the evidence snippet must exist in the extracted text — comparison ignores
   case, spacing, quote and dash style, and bullets;
 - the value itself must be supported by that snippet;
-- OCR text is allowed a near match (`SequenceMatcher` ≥ 0.85), recorded as
-  `verified_fuzzy`, because recognition noise is expected;
+- how much of the snippet is really there is measured, not just whether it
+  is: `SequenceMatcher` against the best-aligned span of the text, on **every
+  page**, not only on scans. A model drops a comma or straightens a dash on a
+  text layer too, and rejecting those values lost correct data; the
+  difference is priced instead.
 - long values (over 120 chars — summaries, descriptions) only have the
   snippet checked, since they are joined text.
 
-Status becomes `missing`, `not_found` or `verified*`, and anything short of
-verified flags the field.
+| Similarity | Status | `evidence` factor |
+|---|---|---|
+| the snippet is in the text | `verified` | 1.00 |
+| ≥ 0.90 | `verified_fuzzy` | 0.85 |
+| 0.75 – 0.90 | `verified_weak` | 0.60 |
+| < 0.75, missing, or the snippet does not support the value | — | **rejected (R-03)** |
 
-### `app/application/services/field_record_builder.py` (379 lines) — the hub
+A window starts at `text_position - snippet_position`, which lines the two
+copies of the common run up with each other; centring the window on the run
+instead slides a snippet whose match sits at one end half out of the window
+and scores a near-exact quote as a weak one.
 
-Turns one `CVExtraction` into `list[FieldRecord]`. Read this file first if
-you read only one.
+Below 0.75 the snippet is not really in the document, which no score can
+express, so the value is **dropped** rather than queued: see stage 4b.
+
+### `app/application/services/field_record_builder.py` (489 lines) — the hub
+
+Turns one `CVExtraction` into an `ExtractionOutcome`: the records to keep,
+and the values that were dropped. Read this file first if you read only one.
 
 For every field, in this order:
 
-1. build the record with `raw_value`, confidence, evidence, page;
+1. build the record with `raw_value`, evidence, page, and the model's own
+   number parked in `model_confidence` where nothing reads it;
 2. a `null` value (or `is_current=false`) returns early — no evidence needed
-   (FR-026);
-2. **evidence check** → `evidence_status`, and a review reason if it failed;
-3. **normalise** — see the rule table below. This can change `value`, set
-   `rule`, lower `confidence`, or add a review reason;
-4. **then** compare the final confidence against the review limit.
+   and nothing to doubt, so it scores 1.00 (FR-026);
+3. **evidence check**. If it fails, the value is **rejected** (`R-03`): no
+   field record, no review item, an entry on `outcome.rejected`;
+4. **normalise** — see the rule table below. This can change `value`, set
+   `rule`, add a review reason, and record which confidence factors the
+   repair cost;
+4. **score** — `base x evidence x validation x mapping` (stage 4b);
+5. **then** compare that score against the review limit.
 
-> Step 5 comes after step 4 on purpose. Two rules lower confidence, and if
-> the limit were applied to the model's original number, a value knocked
-> below the limit by a factor would still count as accepted.
+> Step 6 comes last on purpose. If the limit were applied before
+> normalisation, a value knocked below it by a repair would still count as
+> accepted.
+
+There are three outcomes, and the difference matters: **accepted**,
+**flagged** (in the document, but something needs a person — an unreadable
+date, an unknown skill, a score under the limit), and **rejected** (not in
+the document, so there is nothing to decide).
 
 It also runs three passes over the finished records:
 
@@ -316,6 +346,80 @@ It also runs three passes over the finished records:
 - `_repair_reversed_dates` — a start after its end is swapped (N-DATE-05);
 - `_add_inferred_country` — a country read from the city when none was
   stated (N-GEO-02).
+
+---
+
+## Stage 4b — The confidence model
+
+### `app/domain/services/confidence.py` (270 lines)
+
+    confidence = base x evidence x validation x mapping
+
+rounded to two decimals, then compared with the review limit (0.65 by
+default, changeable by an administrator: FR-046, FR-067).
+
+A field's confidence used to be the number the model reported about its own
+answer. That number is not evidence of anything: a model that invents a
+company name reports the same 0.95 it reports for a name copied off the page.
+Every score is now computed from checks that can be re-run, and the model's
+number is kept only as `model_confidence`, for comparison — it is in no
+formula and decides nothing.
+
+| Factor | 1.00 when | Less when |
+|---|---|---|
+| `base` | the page had a text layer, or the value came from a vetting result | the page was read by OCR: the factor **is** that page's mean OCR confidence |
+| `evidence` | the snippet is in the source text | 0.85 for a near quote, 0.60 for a worn one (table in stage 4) |
+| `validation` | the value passed its format check as written | 0.80 after a listed repair: `N-DATE-03` ambiguous order, `N-DATE-05` swapped pair, `N-PHONE-01` where the dial code was borrowed from the profile country |
+| `mapping` | an exact or alias table match, or the field has no table | 0.85 for a fuzzy match: `N-SKILL-03` corrected spelling, `N-GEO-02` country read from a city |
+
+`base` is per **page**, not per file: one scanned page in a ten-page PDF must
+not make the other nine look doubtful, and a 0.60 scan must not hide behind a
+file-wide mean of 0.95. `ExtractedDocument` carries `page_ocr_confidence`
+(`None` for a text page) and `page_text_layers`, so a value quoted from the
+text layer of a page whose *logo* was read by OCR keeps `base` 1.00 — a page
+can hold both. Where the page cannot be pinned down on a document that needed
+OCR somewhere, the file's own mean applies rather than a text layer the value
+may not have come from. The granularity is a page mean, not RapidOCR's
+per-box scores.
+
+**FR-018 is served through `base`.** There is no separate "low OCR
+confidence" flag any more: a 0.62 page scores every value on it at or below
+0.62, which is under the limit, so it reaches a person anyway — and
+`confidence_parts` says *which* factor was responsible, which the flag never
+did.
+
+### The parts are the explanation
+
+`confidence_parts` is stored on the record and in `extracted_field`, so a
+stored 0.68 is not an opinion but "a 0.80 scan, quoted almost exactly", and
+the arithmetic can be checked months later (FR-035, FR-048, NFR-023). Four
+keys normally; a fifth, `agreement`, appears only when sources agreed, so
+`product + agreement` is always the stored number.
+
+### M-04 — agreement between sources
+
+A second file stating the same value is evidence the first one did not have,
+so in the merge the value is worth more than either reading of it alone: the
+**highest** confidence among the agreeing records **plus 0.05**, capped at
+1.00, added **once** however many sources agree. Two mentions inside one
+source are not agreement — a CV repeating itself confirms nothing.
+
+This runs in `ProfileBuilder` before anything decides which records are
+usable, which is the whole reason it is there: two scans of one CV at 0.62
+each reach 0.67 together and are accepted, where either alone would have gone
+to a person. A record held back for any *other* reason keeps it — agreement
+about what the page says is not agreement that the value is usable.
+
+### R-03 — rejected, not queued
+
+A value whose snippet is not in the document never becomes a field record and
+never becomes a review item: there is nothing for a person to decide. It goes
+on `processing_attempt.rejected` with its raw value, its snippet and the rule,
+because "the model claimed this and we threw it away" is exactly what someone
+investigating a bad profile needs to see (NFR-028). It is personal data, so it
+is stored there and never in an application log.
+
+---
 
 ### The rule modules — `app/domain/services/`
 
@@ -329,6 +433,7 @@ are trivially testable and always give the same answer (FR-034).
 | `countries.py` | 262 | `N-GEO-01..02` | `CountryCatalog.match()` by name or ISO alpha-2, with aliases for how CVs really write countries ("UK", "KSA", "Palestinian Authority"). `CITY_COUNTRIES` (109 cities) and `infer_country_code_from_city()` for the common case of a CV giving only a city — a city with more than one plausible country is deliberately absent. `DIAL_CODES` (57) feeds the phone rule. |
 | `contacts.py` | 125 | `N-PHONE-01`, `N-EMAIL-01`, `N-NAME-01` | Phone to E.164: `+962 7 9000 1234`, `0790001234` and `00962790001234` all become `+962790001234`. A local number borrows the profile's country; with no country it is rejected rather than given a guessed prefix, because a wrong dial code looks correct. Email lowercased. Names title-cased with no acronym exemption — CV headers shout names, and no person's name is an acronym. |
 | `entity_matching.py` | 611 | `M-01`, `R-10` | Stage 5. Which entities from different sources are the same thing. See below. |
+| `confidence.py` | 270 | `R-03`, `M-04` | Stage 4b. The four factors, the thresholds that grade an evidence match, and the cross-source agreement boost. |
 | `conflict_rules.py` | 272 | `C-00..06` | Stage 5. See below. |
 | `rules.py` | 103 | — | Every rule identifier with a sentence explaining it, so a stored `rule` string can be shown to a person (FR-051). `describe()` raises on an unknown id, and a test walks every rule class, so a rule added without a description fails CI rather than reaching a dashboard as a bare code. |
 
@@ -545,7 +650,7 @@ looping. Logs carry ids and outcomes only, never CV content (NFR-022).
 | Table | Model file | Holds |
 |---|---|---|
 | `processing_attempt` | `persistence/models/processing_models.py` | One row per try: trigger, provider, model version, outcome, raw answer, validation result, timings, the limit used. Never overwritten (FR-058). |
-| `extracted_field` | same file | One row per field record: value, raw value, confidence, evidence, page, evidence status, rule, review reasons (FR-035). |
+| `extracted_field` | same file | One row per field record: value, raw value, confidence and its four parts, the model's own number, evidence, page, evidence status, rule, review reasons (FR-035). |
 | `review_item` / `review_option` | `persistence/models/review_models.py` | The needs-review queue with every competing value and its source (FR-041, FR-033). |
 | `profile_change_log` | same file | Field history: before, after, who, why (FR-037). |
 | `vetting_record` | `persistence/models/vetting_model.py` | Vetted skill levels (FR-056). **Nothing writes to it yet** — see the gaps. |
@@ -591,7 +696,8 @@ live module is in `app/domain/services/` or
 | Schema validation before anything is used | FR-022 | `llm_output_validator.py` |
 | Retries with increasing wait, then review | FR-023 | `cv_processing_service.py` |
 | One immutable record per attempt | FR-058, FR-059 | `processing_attempt.py` |
-| Confidence on every field | FR-027 | schema + `field_record_builder.py` |
+| Confidence on every field | FR-027 | `confidence.py` + `field_record_builder.py` |
+| Confidence computed from verifiable factors, not the model's claim | FR-048 | `confidence.py` |
 | Evidence: snippet and page, verified in the text | FR-065, NFR-028 | `evidence_checker.py` |
 | Null when absent; no invented values | FR-026 | schema + builder early return |
 | Date normalisation, precision kept | FR-028 | `dates.py` |
@@ -697,10 +803,11 @@ changing:
 | `test_normalisation.py` | 154 | Dates, skills (incl. fuzzy and the 5-character floor), countries, cities, phone, email, names, and that every rule id has a description. |
 | `test_conflict_rules.py` | 28 | Every rung of the `C-` ladder, the policy table, and that the same records always give the same answer. |
 | `test_entity_matching.py` | 28 | What counts as the same job, degree, certificate or project across sources and what deliberately does not: the company key, a promotion, one company twice in one CV, two equally good candidates, and that shuffled records and a newly added source leave the result and the entity ids unchanged. |
-| `test_confidence_factors.py` | 9 | The 0.85 and 0.80 factors measured on **built records**, not on the functions alone — including a value pushed under the limit by a factor. |
+| `test_confidence_model.py` | 34 | The whole formula, factor by factor, with the arithmetic named in each test: a text page quoted exactly, a near quote, a fuzzy skill match, a repaired date pair, a poor scan, a page-by-page base on a two-page file, a weak quote, a rejection, the model's own number being ignored, the agreement boost (and what is not agreement), a vetted value, and that the shipped 0.65 limit is the documented one. |
+| `test_confidence_factors.py` | 9 | The two normalisation rules that lower a score, measured on **built records** rather than on the functions alone. |
 | `test_vetting_parser.py` | 23 | FR-056/057, levels outside 1–5, unknown skills, broken payloads. |
 | `test_processing_service.py` | 12 | The retry loop and attempt records, via `FakeAI`. Start here for pipeline behaviour. |
-| `test_validation_and_evidence.py` | 12 | Schema validation, dropped keys, evidence verification. |
+| `test_validation_and_evidence.py` | 14 | Schema validation, dropped keys, evidence verification and the three grades of match. |
 | `test_settings_repository.py` | 15 | The admin-settable review limit. |
 | `test_review_api.py` | — | The review queue endpoints end to end. |
 | `test_persistence_integration.py` | — | Real database writes. Skipped unless a database is reachable. |
@@ -828,9 +935,5 @@ Honest list, worst first.
 3. **`file_hash` is not unique per candidate** (FR-011, FR-055). The
    migration has no constraint and the reference SQL says system-wide
    unique. This is `feature/cv-duplicate-detection`'s work.
-4. **The confidence model is the model's own number**, adjusted by mapping
-   and validation factors. `app/application/ai/confidence/` computes a score
-   from four separately verifiable factors, which is what FR-048's quality
-   numbers would need.
-5. **The prompt has no automated regression test.** Level 3 output diffing
+4. **The prompt has no automated regression test.** Level 3 output diffing
    is the only safety net.

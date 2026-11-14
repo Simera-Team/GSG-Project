@@ -36,6 +36,10 @@ from app.domain.entities.field_record import (
     ReviewOption,
     ReviewReason,
 )
+from app.domain.services.confidence import (
+    DEFAULT_REVIEW_CONFIDENCE,
+    apply_agreement_boost,
+)
 from app.domain.services.entity_matching import (
     EntityGroup,
     MatchRule,
@@ -55,8 +59,13 @@ class ProfileBuildResult:
 
 class ProfileBuilder:
 
-    def __init__(self, review_ids: itertools.count | None = None):
+    def __init__(self, review_ids: itertools.count | None = None,
+                 confidence_threshold: float = DEFAULT_REVIEW_CONFIDENCE):
         self._review_ids = review_ids or itertools.count(1)
+        # The limit in force for this job (FR-046, FR-067). Needed here and not
+        # only while records are built, because the agreement boost can lift a
+        # record back over it.
+        self._confidence_threshold = confidence_threshold
 
     def build(self, records: list[FieldRecord],
               include_field_reviews: bool = True) -> ProfileBuildResult:
@@ -64,6 +73,11 @@ class ProfileBuilder:
         when rebuilding a stored profile, where each file's flagged fields
         already have review items."""
         review_items: list[ReviewItem] = []
+
+        # M-04, before anything else looks at which records are usable: two
+        # sources stating the same value confirm each other, which can lift a
+        # record that was held back only for a low score back to accepted.
+        apply_agreement_boost(records, self._confidence_threshold)
 
         personal = self._personal_info(records, review_items)
         accepted = [r for r in records if not r.needs_review and r.value is not None]

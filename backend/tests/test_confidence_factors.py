@@ -5,6 +5,10 @@ corrected spelling (N-SKILL-03) and a date whose day/month order was
 ambiguous (N-DATE-03). Neither sends the field to a person — the lost
 certainty shows up as a lower confidence instead, which is also what decides
 whether the review limit catches it.
+
+These tests are about those two rules reaching the score at all. The formula
+they feed into, and every other factor in it, is
+:mod:`tests.test_confidence_model`.
 """
 
 import pytest
@@ -12,13 +16,16 @@ import pytest
 from app.application.dto.cv_extraction import CVExtraction
 from app.application.dto.extracted_document import ExtractedDocument
 from app.application.services.field_record_builder import (
-    AMBIGUOUS_DATE_VALIDATION_FACTOR,
     FieldRecordBuilder,
     FieldRecordSettings,
 )
 from app.domain.entities.field_record import ReviewReason
+from app.domain.services.confidence import (
+    FUZZY_MAPPING_FACTOR,
+    REPAIRED_VALIDATION_FACTOR,
+)
 from app.domain.services.countries import CountryCatalog
-from app.domain.services.skills import FUZZY_MAPPING_FACTOR, SkillRule
+from app.domain.services.skills import SkillRule
 from app.infrastructure.reference_data import SEED_COUNTRIES, seed_skill_catalog
 
 from tests.helpers import answer, f
@@ -31,7 +38,7 @@ def build(text: str, threshold: float = 0.65, **overrides):
         FieldRecordSettings(confidence_threshold=threshold),
     )
     document = ExtractedDocument(source_name="cv.pdf", text=text)
-    return builder.build(CVExtraction.model_validate(answer(**overrides)), document)
+    return builder.build(CVExtraction.model_validate(answer(**overrides)), document).records
 
 
 def one(records, entity_type, field_name, value=None):
@@ -48,11 +55,11 @@ def one(records, entity_type, field_name, value=None):
 SKILL_TEXT = "SKILLS\nPostgress, PostgreSQL, Nagra\n"
 
 
-def misspelt(confidence=1.0):
+def misspelt():
     return {"skills": [
-        {"name": f("Postgress", "Postgress", confidence=confidence)},
-        {"name": f("PostgreSQL", "PostgreSQL", confidence=confidence)},
-        {"name": f("Nagra", "Nagra", confidence=confidence)},
+        {"name": f("Postgress", "Postgress")},
+        {"name": f("PostgreSQL", "PostgreSQL")},
+        {"name": f("Nagra", "Nagra")},
     ]}
 
 
@@ -88,10 +95,22 @@ def test_a_skill_matching_nothing_still_goes_to_review():
 
 def test_the_mapping_factor_can_push_a_weak_value_under_the_limit():
     """A spelling correction on an already-uncertain read is what the limit is
-    there to catch: 0.70 * 0.85 = 0.595, below 0.65."""
-    records = build(SKILL_TEXT, threshold=0.65, **misspelt(confidence=0.70))
+    there to catch: a 0.70 scan x 0.85 = 0.59, below 0.65."""
+    scan = ExtractedDocument(
+        source_name="cv.pdf", text=SKILL_TEXT, page_texts=[SKILL_TEXT],
+        extraction_method="ocr", ocr_confidence=0.70,
+        page_ocr_confidence=[0.70], page_text_layers=[""],
+    )
+    builder = FieldRecordBuilder(
+        CountryCatalog(SEED_COUNTRIES), seed_skill_catalog(),
+        FieldRecordSettings(confidence_threshold=0.65),
+    )
+    records = builder.build(
+        CVExtraction.model_validate(answer(**misspelt())), scan).records
+
     skill = one(records, "skills", "name", "Postgress")
     assert skill.value == "PostgreSQL"
+    assert skill.confidence == pytest.approx(0.59)       # 0.70 x 0.85, rounded
     assert ReviewReason.LOW_CONFIDENCE in skill.review_reasons
 
 
@@ -119,15 +138,14 @@ def test_ambiguous_date_keeps_the_year_without_a_review_item():
 def test_an_ambiguous_date_carries_the_validation_factor():
     records = build(DATE_TEXT, **dated("04/05/2022", "03/2024"))
     start = one(records, "work_experience", "start_date")
-    assert start.confidence == pytest.approx(
-        0.95 * AMBIGUOUS_DATE_VALIDATION_FACTOR)
+    assert start.confidence == pytest.approx(REPAIRED_VALIDATION_FACTOR)
 
 
 def test_an_unambiguous_date_keeps_its_full_confidence():
     records = build("EXPERIENCE\n03/2022 - 03/2024\n", **dated("03/2022", "03/2024"))
     start = one(records, "work_experience", "start_date")
     assert start.value == {"value": "2022-03", "precision": "month"}
-    assert start.confidence == pytest.approx(0.95)
+    assert start.confidence == pytest.approx(1.0)
 
 
 def test_an_unreadable_date_still_goes_to_review():

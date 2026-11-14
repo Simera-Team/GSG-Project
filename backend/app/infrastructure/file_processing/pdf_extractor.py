@@ -63,10 +63,11 @@ class PdfExtractor(BaseExtractor):
                 fixes.extend(outcome.fixes)
 
         if not extra:
-            return PageResult(index, "text", text)
+            return PageResult(index, "text", text, text_layer=text)
         return PageResult(index, "mixed", text + "\n\n" + "\n".join(extra),
                           round(float(np.mean(scores)), 4),
-                          ocr_fixes=["read text inside images"] + fixes)
+                          ocr_fixes=["read text inside images"] + fixes,
+                          text_layer=text)
 
     def _text_image_areas(self, page) -> list:
         page_area = page.rect.width * page.rect.height

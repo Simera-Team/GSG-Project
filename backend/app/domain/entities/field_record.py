@@ -1,6 +1,9 @@
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:                      # avoids a cycle: confidence imports this module
+    from app.domain.services.confidence import ConfidenceParts
 
 # rule of a field record created by a reviewer's decision (FR-043)
 DECISION_RULE = "review_decision"
@@ -9,10 +12,17 @@ DECISION_RULE = "review_decision"
 # Why a field needs a human (stored on the field record and the review item).
 class ReviewReason:
     LOW_CONFIDENCE = "low_confidence"                 # FR-041, NFR-027
-    LOW_OCR_CONFIDENCE = "low_ocr_confidence"         # FR-018
-    EVIDENCE_MISSING = "evidence_missing"             # NFR-028
-    EVIDENCE_NOT_FOUND = "evidence_not_found"         # NFR-028
-    VALUE_NOT_IN_EVIDENCE = "value_not_in_evidence"   # NFR-028
+    # The three evidence failures below are no longer raised: a value whose
+    # snippet is not in the document is rejected under R-03 instead of being
+    # queued, because there is nothing for a person to decide (NFR-028). They
+    # stay listed so records stored before that change still read back with a
+    # reason a dashboard can name.
+    EVIDENCE_MISSING = "evidence_missing"             # NFR-028, legacy
+    EVIDENCE_NOT_FOUND = "evidence_not_found"         # NFR-028, legacy
+    VALUE_NOT_IN_EVIDENCE = "value_not_in_evidence"   # NFR-028, legacy
+    # Raised while OCR quality was a flag of its own; it is now the `base`
+    # factor of the confidence model, so a poor scan scores low instead.
+    LOW_OCR_CONFIDENCE_LEGACY = "low_ocr_confidence"  # FR-018, legacy
     UNPARSEABLE_DATE = "unparseable_date"             # FR-028
     CURRENT_JOB_CONFLICT = "current_job_has_end_date" # FR-028
     UNKNOWN_COUNTRY = "unknown_country"               # FR-070
@@ -59,6 +69,16 @@ class FieldRecord:
     review_reasons: list[str] = field(default_factory=list)
     note: str | None = None          # hint for the reviewer, e.g. closest skill
 
+    # Why the confidence is what it is: base x evidence x validation x mapping,
+    # plus any agreement between sources (M-04). Stored so a number can always
+    # be explained rather than trusted (FR-035, FR-048).
+    confidence_parts: "ConfidenceParts | None" = None
+
+    # What the language model said about its own answer. Kept for comparison
+    # only: it is not part of the formula and decides nothing, because a model
+    # reports the same certainty for a copied value and an invented one.
+    model_confidence: float | None = None
+
     # Where the value came from, needed by the conflict rules (FR-031, FR-032).
     # Set when records are loaded for a merge; left at the defaults while a
     # single file is being processed, where there is nothing to compare against.
@@ -90,6 +110,42 @@ class FieldRecord:
             "review_reasons": self.review_reasons,
             "note": self.note,
             "source_kind": self.source_kind,
+            "confidence_parts": self.confidence_parts.to_dict() if self.confidence_parts else None,
+            "model_confidence": self.model_confidence,
+        }
+
+
+@dataclass
+class RejectedValue:
+    """A value an ``R-`` rule dropped, kept so the drop can be audited.
+
+    A rejected value is not a field record and not a review item: there is
+    nothing for a person to decide, because the value is not in the source
+    document (NFR-028). It is still written down, because "the model claimed
+    this and we threw it away" is exactly what someone investigating a bad
+    profile needs to see. The list is stored with the processing attempt that
+    produced it, never in an application log, which must hold no personal data.
+    """
+
+    entity: str                      # e.g. "work_experience[2]"
+    entity_type: str
+    field_name: str
+    raw_value: Any                   # value exactly as the LLM returned it
+    reason: str                      # the rule that dropped it, e.g. "R-03"
+    detail: str | None = None        # why, in a sentence
+    evidence: str | None = None      # the snippet the model offered
+    page: int | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "entity": self.entity,
+            "entity_type": self.entity_type,
+            "field_name": self.field_name,
+            "raw_value": self.raw_value,
+            "reason": self.reason,
+            "detail": self.detail,
+            "evidence": self.evidence,
+            "page": self.page,
         }
 
 
