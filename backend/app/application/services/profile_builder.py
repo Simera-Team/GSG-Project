@@ -22,6 +22,11 @@ from dataclasses import dataclass, field
 from pydantic import ValidationError
 
 from app.application.dto.profile_document import ProfileDocument
+from app.domain.services.conflict_rules import (
+    ConflictRule,
+    Fallback,
+    resolve_field,
+)
 from app.domain.entities.field_record import (
     DECISION_RULE,
     FieldRecord,
@@ -121,22 +126,33 @@ class ProfileBuilder:
                 continue
 
             candidates = by_field.get(name, [])
-            distinct = {_key(r.value) for r in candidates}
-            if len(distinct) == 1:
-                info[name] = candidates[0].value
-                info["field_ids"][name] = candidates[0].field_id
-            elif len(distinct) > 1:
-                # FR-033: sources disagree and no rule decides -> review, keep all values.
-                for r in candidates:
-                    r.review_reasons.append(ReviewReason.SOURCE_CONFLICT)
-                review_items.append(ReviewItem(
-                    review_id=next(self._review_ids),
-                    source=", ".join(sorted({r.source for r in candidates})),
-                    entity="personal_info",
-                    field_name=name,
-                    reasons=[ReviewReason.SOURCE_CONFLICT],
-                    options=[_option(r) for r in candidates],
-                ))
+            if not candidates:
+                continue
+
+            # The rules settle what they can on their own (FR-031, FR-032) and
+            # a person is asked only for what is left (FR-033).
+            outcome = resolve_field(candidates)
+
+            if outcome.decided:
+                info[name] = outcome.winner.value
+                info["field_ids"][name] = outcome.winner.field_id
+                # The rule that chose the value is recorded on the record, so
+                # the profile can explain the choice later (FR-035, FR-051).
+                if outcome.rule != ConflictRule.AGREED:
+                    outcome.winner.rule = outcome.rule
+                continue
+
+            for r in outcome.others:
+                r.review_reasons.append(ReviewReason.SOURCE_CONFLICT)
+            review_items.append(ReviewItem(
+                review_id=next(self._review_ids),
+                source=", ".join(sorted({r.source for r in outcome.others})),
+                entity="personal_info",
+                field_name=name,
+                reasons=[ReviewReason.SOURCE_CONFLICT],
+                message=_conflict_message(outcome),
+                options=[_option(r) for r in outcome.others],
+            ))
         return info
 
     # ---- entities ----
@@ -255,3 +271,12 @@ def _option(r: FieldRecord) -> ReviewOption:
 
 def _key(value) -> str:
     return json.dumps(value, sort_keys=True, default=str).casefold()
+
+
+def _conflict_message(outcome) -> str:
+    """Say who is being asked and why, so the queue entry explains itself."""
+    if outcome.ask == Fallback.CANDIDATE:
+        return ("Sources disagree and no rule decides this personal detail; "
+                "only the candidate can confirm it (C-05).")
+    return ("Sources disagree and no rule decides; a reviewer picks from the "
+            "values below or enters a corrected one (C-06).")

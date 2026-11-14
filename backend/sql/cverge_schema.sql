@@ -1,6 +1,7 @@
 -- ---------- ENUMS ----------
 CREATE TYPE user_role   AS ENUM ('candidate', 'reviewer', 'administrator');  -- requirements.md §2.10
 CREATE TYPE file_type   AS ENUM ('pdf', 'docx', 'md', 'json');  -- file extension without the dot
+CREATE TYPE source_kind AS ENUM ('cv', 'linkedin', 'vetting');  -- FR-053: kind of source, separate from the format
 CREATE TYPE file_status AS ENUM ('uploaded', 'processing', 'done', 'failed', 'needs_review');
 CREATE TYPE link_type   AS ENUM ('linkedin', 'github', 'portfolio', 'website', 'other');
 CREATE TYPE attempt_trigger AS ENUM ('first_run', 'auto_retry', 'admin_rerun');  -- FR-058
@@ -69,6 +70,7 @@ CREATE TABLE source_file (
   file_id           SERIAL PRIMARY KEY,
   profile_id        INT NOT NULL REFERENCES profile(profile_id) ON DELETE CASCADE,
   file_type         file_type NOT NULL,
+  source_kind       source_kind NOT NULL,       -- FR-053: set by the upload route, immutable
   original_name     VARCHAR(255) NOT NULL,
   file_hash         CHAR(64) NOT NULL UNIQUE,   -- SHA-256: same file twice = no duplicate
   storage_path      TEXT NOT NULL,              -- raw file, never overwritten

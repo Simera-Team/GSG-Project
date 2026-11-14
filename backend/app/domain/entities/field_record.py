@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 # rule of a field record created by a reviewer's decision (FR-043)
@@ -13,6 +14,7 @@ class ReviewReason:
     EVIDENCE_NOT_FOUND = "evidence_not_found"         # NFR-028
     VALUE_NOT_IN_EVIDENCE = "value_not_in_evidence"   # NFR-028
     UNPARSEABLE_DATE = "unparseable_date"             # FR-028
+    AMBIGUOUS_DATE_ORDER = "ambiguous_date_order"     # FR-028, N-DATE-03
     CURRENT_JOB_CONFLICT = "current_job_has_end_date" # FR-028
     UNKNOWN_COUNTRY = "unknown_country"               # FR-070
     UNKNOWN_SKILL = "unknown_skill"                   # FR-062
@@ -43,6 +45,12 @@ class FieldRecord:
     review_reasons: list[str] = field(default_factory=list)
     note: str | None = None          # hint for the reviewer, e.g. closest skill
 
+    # Where the value came from, needed by the conflict rules (FR-031, FR-032).
+    # Set when records are loaded for a merge; left at the defaults while a
+    # single file is being processed, where there is nothing to compare against.
+    source_kind: str = "cv"                      # cv | linkedin | vetting
+    source_uploaded_at: datetime | None = None   # recency for FR-031
+
     @property
     def needs_review(self) -> bool:
         return bool(self.review_reasons)
@@ -67,6 +75,7 @@ class FieldRecord:
             "review_status": self.review_status,
             "review_reasons": self.review_reasons,
             "note": self.note,
+            "source_kind": self.source_kind,
         }
 
 

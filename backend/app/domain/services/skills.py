@@ -31,6 +31,18 @@ _VERSION = re.compile(r"(?<=[a-z])\s+v?\d+(\.\d+)*$")              # "python 3",
 _SKILLS_WORD = re.compile(r"(?<=\w)\s+(skills?|abilities|ability)$")  # "communication skills"
 _SEPARATORS = re.compile(r"[\s.\-_/]+")                            # keeps "+" and "#"
 
+# One CV entry can name two skills ("React/Redux", "HTML & CSS"). Split on
+# these, but only after the whole entry failed to match a standard skill, so
+# "CI/CD" and "R&D" are never torn in half (N-SKILL-02).
+_COMBINED_ENTRY = re.compile(r"\s*[/&]\s*|\s+and\s+", re.IGNORECASE)
+
+class SkillRule:
+    """Identifier stored on the field record for the rule that set the skill."""
+
+    STANDARD = "N-SKILL-01"      # matched the standard list on its match key
+    SPLIT = "N-SKILL-02"         # one entry named two skills
+
+
 SUGGEST_CUTOFF = 0.8
 MIN_CONTAINED_KEY = 5   # "leadership" inside "teamleadership" -> suggest Leadership
 
@@ -83,6 +95,29 @@ class SkillCatalog:
         if not name or not name.strip():
             return None
         return self._lookup.get(skill_match_key(name))
+
+    def split_entry(self, name: str | None) -> list[str]:
+        """Split one CV entry into the skills it names (N-SKILL-02).
+
+        "React/Redux" is two skills, "CI/CD" is one. The whole entry is looked
+        up first, so a standard name containing a separator is never split.
+        Splitting only happens when every part is itself a known skill:
+        otherwise the entry is left whole and goes to review as written, so a
+        reviewer sees what the CV actually said (FR-062).
+        """
+        if not name or not name.strip():
+            return []
+
+        text = name.strip()
+        if self.lookup(text):
+            return [text]
+
+        parts = [p.strip() for p in _COMBINED_ENTRY.split(text) if p.strip()]
+        if len(parts) < 2:
+            return [text]
+        if all(self.lookup(p) for p in parts):
+            return parts
+        return [text]
 
     def suggest(self, name: str | None) -> str | None:
         """Closest standard skill for an unknown name - a hint for the reviewer only."""

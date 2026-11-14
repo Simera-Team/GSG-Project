@@ -129,8 +129,14 @@ class SqlProcessingRepository(IProcessingRepository):
                    ProcessingAttemptModel.outcome == "valid")
             .group_by(ProcessingAttemptModel.file_id)
         )
-        rows = self.db.scalars(
-            select(ExtractedFieldModel)
+        # The source's kind and arrival time come along, because the conflict
+        # rules decide on them: a vetted value wins (FR-032) and otherwise the
+        # newer source wins (FR-031).
+        rows = self.db.execute(
+            select(ExtractedFieldModel,
+                   SourceFileModel.source_kind,
+                   SourceFileModel.uploaded_at)
+            .join(SourceFileModel, SourceFileModel.file_id == ExtractedFieldModel.file_id)
             .where(ExtractedFieldModel.attempt_id.in_(latest_valid))
             .order_by(ExtractedFieldModel.file_id, ExtractedFieldModel.field_id)
         ).all()
@@ -141,8 +147,9 @@ class SqlProcessingRepository(IProcessingRepository):
                 raw_value=m.raw_value, value=m.value, confidence=m.confidence,
                 evidence=m.evidence, page=m.page, evidence_status=m.evidence_status,
                 rule=m.rule or "", review_reasons=list(m.review_reasons or []),
+                source_kind=source_kind, source_uploaded_at=uploaded_at,
             )
-            for m in rows
+            for m, source_kind, uploaded_at in rows
         ]
 
     # ---- review queue ----

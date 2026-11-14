@@ -8,10 +8,13 @@ from typing import Any
 class SourceFile:
     file_id: int | None
     profile_id: int
-    file_type: str
+    file_type: str              # file format: pdf | docx | md | json
     original_name: str
     file_hash: str
     storage_path: str
+    # FR-053: kind of source, separate from the format and set by the upload
+    # route. Required, because a source without a kind is rejected.
+    source_kind: str = "cv"     # cv | linkedin | vetting
     status: str = "uploaded"
     extraction_method: str | None = None
     ocr_confidence: float | None = None

@@ -17,6 +17,7 @@ A failed job saves its attempts and review item but no profile data (FR-023).
 import json
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 
 from app.application.interfaces.ai_client import IAIClient
 from app.application.interfaces.processing_repository import (
@@ -30,9 +31,15 @@ from app.application.services.cv_processing_service import (
     JobStatus,
     ProcessingResult,
 )
+from app.application.services.profile_builder import ProfileBuilder
 from app.application.services.profile_rebuild_service import ProfileRebuildService
+from app.application.services.vetting_parser import VettingParser, VettingPayloadError
 from app.domain.entities.field_record import ReviewItem, ReviewReason
-from app.domain.entities.processing_attempt import AttemptOutcome, AttemptTrigger
+from app.domain.entities.processing_attempt import (
+    AttemptOutcome,
+    AttemptTrigger,
+    ProcessingAttempt,
+)
 
 
 class SourceFileNotFoundError(Exception):
@@ -76,6 +83,14 @@ class ProcessCVUseCase:
             self._save(source.profile_id, file_id, None, result)
             return result
 
+        # A vetting result is structured data the platform produced itself:
+        # there is nothing for a model to extract, so it is parsed directly and
+        # no LLM attempt is spent on it (FR-056).
+        if source.source_kind == "vetting":
+            result = self._process_vetting(document, file_id)
+            self._save(source.profile_id, file_id, document, result)
+            return result
+
         service = CVProcessingService(
             self.ai_client, self.catalogs.country_catalog(), self.catalogs.skill_catalog(),
             confidence_threshold=self.confidence_threshold, max_attempts=self.max_attempts,
@@ -83,6 +98,51 @@ class ProcessCVUseCase:
         result = service.process(document, trigger)
         self._save(source.profile_id, file_id, document, result)
         return result
+
+    def _process_vetting(self, document, file_id: int) -> ProcessingResult:
+        """Parse a vetting payload into field records without an LLM (FR-056).
+
+        The run is still recorded as an attempt, so a vetting source is as
+        traceable as any other (FR-058); its "LLM response" is the payload
+        itself, which is what the extraction actually read.
+        """
+        started = datetime.now(timezone.utc)
+        parser = VettingParser(self.catalogs.skill_catalog())
+        try:
+            parsed = parser.parse(document.text, document.source_name)
+        except VettingPayloadError as exc:
+            attempt = self._vetting_attempt(started, AttemptOutcome.INVALID, str(exc))
+            return ProcessingResult(
+                JobStatus.FAILED, f"Vetting payload rejected: {exc}", (attempt,),
+                review_items=[ReviewItem(1, document.source_name,
+                                         [ReviewReason.PROFILE_INVALID],
+                                         message=f"Vetting payload rejected: {exc}")],
+                confidence_threshold=self.confidence_threshold)
+
+        attempt = self._vetting_attempt(started, AttemptOutcome.VALID, None,
+                                        response=document.text)
+        built = ProfileBuilder().build(parsed.records)
+        review_items = list(built.review_items)
+
+        if built.profile is None:
+            status, reason = JobStatus.FAILED, "Vetting records failed the profile format"
+        elif review_items:
+            status = JobStatus.NEEDS_REVIEW
+            reason = f"{len(review_items)} vetted value(s) need review"
+        else:
+            status, reason = JobStatus.DONE, None
+
+        return ProcessingResult(status, reason, (attempt,), parsed.records,
+                                review_items, built.profile,
+                                self.confidence_threshold)
+
+    def _vetting_attempt(self, started, outcome, error, response=None) -> ProcessingAttempt:
+        return ProcessingAttempt(
+            attempt_number=1, trigger=AttemptTrigger.FIRST_RUN,
+            provider="vetting", model_version="n/a",
+            started_at=started, finished_at=datetime.now(timezone.utc),
+            outcome=outcome, llm_response=response,
+            validation_result=None, error=error)
 
     def _save(self, profile_id, file_id, document, result: ProcessingResult) -> None:
         try:

@@ -168,14 +168,36 @@ class FileService:
                         "Invalid JSON content"
                     ) from exc
 
+    # FR-053 / FR-054: each accepted format belongs to exactly one kind of
+    # source, so the kind is settled at the upload route and never changes
+    # afterwards. A route that accepts a format for another kind (the admin
+    # vetting upload, FR-007) passes its kind explicitly.
+    KIND_BY_EXTENSION = {
+        "pdf": "cv",
+        "docx": "cv",
+        "doc": "cv",
+        "md": "linkedin",
+        "json": "vetting",
+    }
+
     async def upload_cv(
         self,
         file: UploadFileDTO,
-        user_id: int
+        user_id: int,
+        source_kind: str | None = None,
     ) -> UploadCVResult:
 
         # Step 1: Validate file
         validated_file = self.validate_file(file)
+
+        extension = validated_file.extension.lstrip(".")
+        source_kind = source_kind or self.KIND_BY_EXTENSION.get(extension)
+        if source_kind is None:
+            # FR-008 / FR-053: a source without a kind is rejected rather than
+            # stored with a guessed one.
+            raise InvalidFileTypeError(
+                f"No source kind is defined for '.{extension}' files"
+            )
 
         # Step 2: Get or create user profile
         profile = self.profile_repository.get_or_create_by_user_id(
@@ -216,7 +238,8 @@ class FileService:
             source_file = SourceFile(
                 file_id=None,
                 profile_id=profile.profile_id,
-                file_type=validated_file.extension.lstrip("."),
+                file_type=extension,
+                source_kind=source_kind,
                 original_name=validated_file.filename,
                 file_hash=validated_file.file_hash,
                 storage_path=storage_path,
