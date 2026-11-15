@@ -7,6 +7,7 @@ from app.application.services.cv_processing_service import CVProcessingService, 
 from app.core.exceptions import LLMProviderError
 from app.domain.entities.field_record import ReviewReason
 from app.domain.entities.processing_attempt import AttemptOutcome, AttemptTrigger
+from app.domain.services.confidence import DEFAULT_REVIEW_CONFIDENCE
 from app.infrastructure.reference_data import seed_country_catalog, seed_skill_catalog
 from tests.helpers import CV_TEXT, answer, as_json, f
 
@@ -33,7 +34,7 @@ class FakeAI(IAIClient):
 
 def make_service(ai, waits=None):
     return CVProcessingService(ai, seed_country_catalog(), seed_skill_catalog(),
-                               confidence_threshold=0.6,
+                               confidence_threshold=DEFAULT_REVIEW_CONFIDENCE,
                                sleep=(waits.append if waits is not None else lambda s: None))
 
 

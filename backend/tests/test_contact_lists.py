@@ -7,7 +7,7 @@ from app.application.dto.extracted_document import ExtractedDocument
 from app.application.services.field_record_builder import FieldRecordBuilder, FieldRecordSettings
 from app.application.services.profile_builder import ProfileBuilder
 from app.domain.entities.field_record import FieldRecord, ReviewReason
-from app.domain.services.confidence import ConfidenceParts
+from app.domain.services.confidence import ConfidenceParts, DEFAULT_REVIEW_CONFIDENCE
 from app.domain.services.conflict_rules import ConflictRule, Fallback, resolve_field
 from app.domain.services.countries import CountryCatalog
 from app.infrastructure.reference_data import SEED_COUNTRIES, seed_skill_catalog
@@ -32,7 +32,7 @@ def test_cv_with_two_emails_two_records_both_in_profile_no_review():
     doc = ExtractedDocument(source_name="cv.pdf", text=text)
     builder = FieldRecordBuilder(
         CountryCatalog(SEED_COUNTRIES), seed_skill_catalog(),
-        FieldRecordSettings(confidence_threshold=0.6),
+        FieldRecordSettings(confidence_threshold=DEFAULT_REVIEW_CONFIDENCE),
     )
     outcome = builder.build(CVExtraction.model_validate(data), doc)
 
@@ -40,7 +40,7 @@ def test_cv_with_two_emails_two_records_both_in_profile_no_review():
     assert len(email_records) == 2
     assert {r.value for r in email_records} == {"rana.work@example.com", "rana.personal@example.com"}
 
-    result = ProfileBuilder(confidence_threshold=0.6).build(outcome.records)
+    result = ProfileBuilder(confidence_threshold=DEFAULT_REVIEW_CONFIDENCE).build(outcome.records)
     profile = result.profile
     assert profile is not None
     assert len(profile.personal_info.emails) == 2
@@ -65,7 +65,7 @@ def test_cv_email_a_linkedin_email_b_both_kept_primary_is_b():
         confidence=0.9, evidence="email.b@example.com", page=1, evidence_status="verified",
         rule="llm_extraction", source_kind="linkedin", source_uploaded_at=NEWER,
     )
-    result = ProfileBuilder(confidence_threshold=0.6).build([r_cv, r_li])
+    result = ProfileBuilder(confidence_threshold=DEFAULT_REVIEW_CONFIDENCE).build([r_cv, r_li])
     profile = result.profile
     assert profile is not None
     assert set(profile.personal_info.emails) == {"email.a@example.com", "email.b@example.com"}
@@ -118,7 +118,7 @@ def test_phone_local_and_international_merge_to_one_phone():
         confidence=0.9, evidence="+962 7 9000 1234", page=1, evidence_status="verified",
         rule="N-PHONE-01", source_kind="linkedin", source_uploaded_at=NEWER,
     )
-    result = ProfileBuilder(confidence_threshold=0.6).build([r_cv, r_li])
+    result = ProfileBuilder(confidence_threshold=DEFAULT_REVIEW_CONFIDENCE).build([r_cv, r_li])
     profile = result.profile
     assert profile is not None
     assert profile.personal_info.phones == ["+962790001234"]
@@ -147,7 +147,7 @@ def test_city_still_conflicts_and_reaches_candidate_c05():
     assert outcome.rule == ConflictRule.ASK_CANDIDATE
     assert outcome.ask == Fallback.CANDIDATE
 
-    result = ProfileBuilder(confidence_threshold=0.6).build([r_cv, r_li])
+    result = ProfileBuilder(confidence_threshold=DEFAULT_REVIEW_CONFIDENCE).build([r_cv, r_li])
     city_reviews = [i for i in result.review_items if i.field_name == "city"]
     assert len(city_reviews) == 1
     assert city_reviews[0].reasons == [ReviewReason.SOURCE_CONFLICT]

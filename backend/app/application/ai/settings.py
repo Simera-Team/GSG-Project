@@ -9,6 +9,7 @@ it ran under (FR-067, NFR-023).
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.application.ai.rules import RULE_VERSION
+from app.domain.services.confidence import DEFAULT_REVIEW_CONFIDENCE
 
 
 class AISettings(BaseModel):
@@ -18,7 +19,7 @@ class AISettings(BaseModel):
 
     # --- Confidence model ------------------------------------------------
     confidence_threshold: float = Field(
-        default=0.65,
+        default=DEFAULT_REVIEW_CONFIDENCE,
         ge=0,
         le=1,
         description="Below this a field is marked low_confidence and goes to review (R-06).",

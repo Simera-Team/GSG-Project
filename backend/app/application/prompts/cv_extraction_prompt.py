@@ -74,7 +74,7 @@ city "Amman" and country "Jordan"; drop street, postcode and region. A LinkedIn 
 location like "Palestinian Authority" is a country-level value with no city.
 - title: the candidate's headline or target role if one is stated (e.g. "Software \
 Engineer | Data Engineer" or "seeking employment as a First Officer"). If there is \
-none, use the most recent job title with confidence at most 0.6.
+none, use the most recent job title.
 - summary: the profile / about / summary paragraph, joined into one paragraph, \
 not rewritten.
 
@@ -127,18 +127,6 @@ links
 - Every profile URL from the text and the Hyperlinks list, each once. \
 type: linkedin, github, portfolio (a personal work showcase), website (other \
 personal or company site), or other. Keep the URL as written; do not add "https://".
-
-## Confidence (0 to 1)
-
-Score each value by how sure you are that it is correct and correctly placed:
-- 0.9-1.0: stated clearly and unambiguously in a labelled place.
-- 0.6-0.89: you interpreted layout or wording (e.g. which line is the company, \
-or a title taken from the latest job).
-- below 0.6: the text is garbled, the value is ambiguous, or you corrected an OCR \
-error.
-For text read with OCR, also cap scores at the OCR confidence given in the request.
-A null value gets confidence 1.0 when the CV clearly lacks it, lower if the text \
-was too damaged to tell.
 """
 
 
@@ -152,8 +140,7 @@ def build_user_prompt(
 
     if ocr_confidence is not None:
         parts.append(
-            "This text was read with OCR from a scanned or image-based page "
-            f"(average OCR confidence {ocr_confidence:.2f})."
+            "This text was read with OCR from a scanned or image-based page."
         )
 
     # Page markers let the LLM report the page of each evidence snippet (FR-065).

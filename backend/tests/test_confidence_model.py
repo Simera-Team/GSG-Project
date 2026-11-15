@@ -31,6 +31,8 @@ from app.domain.services.confidence import (
     ConfidenceRule,
     EvidenceGrade,
     apply_agreement_boost,
+    evidence_factor,
+    grade_evidence,
 )
 from app.domain.services.countries import CountryCatalog
 from app.domain.services.dates import DateRule
@@ -503,3 +505,259 @@ def test_every_built_record_can_explain_its_own_confidence():
     for r in outcome.records:
         assert r.confidence_parts is not None, r.field_name
         assert r.confidence == r.confidence_parts.confidence, r.field_name
+
+
+# ---- End-to-end audit verification tests ----
+
+def test_spec_text_layer_value_with_exact_evidence_scores_one():
+    """Text-layer value with exact evidence -> 1.0."""
+    doc = text_document("Rana Odeh\nAmman, Jordan\n")
+    outcome = build(doc, **personal(first_name=f("Rana", "Rana", page=1)))
+    rec = one(outcome, "personal_info", "first_name")
+    assert rec.confidence == 1.0
+    assert rec.confidence_parts == ConfidenceParts(base=1.0, evidence=1.0, validation=1.0, mapping=1.0)
+
+
+@pytest.mark.parametrize("similarity, expected_factor, expected_grade", [
+    (0.92, 0.85, EvidenceGrade.VERIFIED_FUZZY),
+    (0.80, 0.60, EvidenceGrade.VERIFIED_WEAK),
+    (0.74, None, None),
+])
+def test_spec_evidence_ratio_buckets(similarity, expected_factor, expected_grade):
+    """ratio 0.92 -> 0.85; ratio 0.80 -> 0.60; ratio 0.74 -> rejected."""
+    grade = grade_evidence(similarity)
+    assert grade == expected_grade
+    if grade is not None:
+        assert evidence_factor(grade) == expected_factor
+
+
+def test_spec_evidence_boundaries_at_ninety_and_seventy_five():
+    """Boundaries: exactly 0.90 and exactly 0.75."""
+    # 0.90 is in the 0.85 bucket
+    assert grade_evidence(0.90) == EvidenceGrade.VERIFIED_FUZZY
+    assert evidence_factor(grade_evidence(0.90)) == 0.85
+    # Just below 0.90 is in the 0.60 bucket
+    assert grade_evidence(0.899) == EvidenceGrade.VERIFIED_WEAK
+    assert evidence_factor(grade_evidence(0.899)) == 0.60
+
+    # 0.75 is in the 0.60 bucket
+    assert grade_evidence(0.75) == EvidenceGrade.VERIFIED_WEAK
+    assert evidence_factor(grade_evidence(0.75)) == 0.60
+    # Just below 0.75 is rejected
+    assert grade_evidence(0.749) is None
+
+
+def test_spec_ocr_page_mean_point_ninety_one_with_exact_evidence():
+    """OCR page with mean 0.91 and exact evidence -> 0.91."""
+    doc = scanned_document("Rana Odeh\nAmman, Jordan\n", confidence=0.91)
+    outcome = build(doc, **personal(first_name=f("Rana", "Rana", page=1)))
+    rec = one(outcome, "personal_info", "first_name")
+    assert rec.confidence == 0.91
+    assert rec.confidence_parts.base == 0.91
+    assert rec.confidence_parts.evidence == 1.0
+
+
+def test_spec_mixed_document_different_bases_per_page():
+    """Mixed document: one text page and one OCR page in the same file get different base values."""
+    mixed_doc = ExtractedDocument(
+        source_name="mixed.pdf",
+        text="Page 1: Rana Odeh\n\nPage 2: Amman, Jordan",
+        page_texts=["Page 1: Rana Odeh", "Page 2: Amman, Jordan"],
+        extraction_method="mixed",
+        ocr_confidence=0.75,
+        page_ocr_confidence=[None, 0.75],  # page 1 has text layer, page 2 is OCR scan
+        page_text_layers=["Page 1: Rana Odeh", ""],
+    )
+    outcome = build(
+        mixed_doc,
+        **personal(
+            first_name=f("Rana", "Rana", page=1),
+            city=f("Amman", "Amman", page=2),
+        ),
+    )
+    r_text = one(outcome, "personal_info", "first_name")
+    r_ocr = one(outcome, "personal_info", "city")
+
+    assert r_text.confidence_parts.base == 1.0
+    assert r_text.confidence == 1.0
+
+    assert r_ocr.confidence_parts.base == 0.75
+    assert r_ocr.confidence == 0.75
+
+
+def test_spec_validation_and_mapping_factors_stack():
+    """N-DATE-03 applied -> x0.80; N-SKILL-03 applied -> x0.85; both together -> 0.68."""
+    from app.application.services.field_record_builder import _Repairs
+    repairs_date = _Repairs(repaired=True, fuzzy=False)
+    p_date = repairs_date.parts(base=1.0, evidence=1.0)
+    assert (p_date.validation, p_date.mapping, p_date.product) == (0.80, 1.0, 0.80)
+
+    repairs_skill = _Repairs(repaired=False, fuzzy=True)
+    p_skill = repairs_skill.parts(base=1.0, evidence=1.0)
+    assert (p_skill.validation, p_skill.mapping, p_skill.product) == (1.0, 0.85, 0.85)
+
+    repairs_both = _Repairs(repaired=True, fuzzy=True)
+    p_both = repairs_both.parts(base=1.0, evidence=1.0)
+    assert (p_both.validation, p_both.mapping, p_both.product) == (0.80, 0.85, 0.68)
+
+
+def test_spec_model_confidence_does_not_affect_final_confidence():
+    """Changing model_confidence in LLM output must NOT change final confidence."""
+    doc = text_document("Rana Odeh\n")
+    out_high = build(doc, **personal(first_name=f("Rana", "Rana", confidence=0.99)))
+    out_low = build(doc, **personal(first_name=f("Rana", "Rana", confidence=0.10)))
+    out_none = build(doc, **personal(first_name=f("Rana", "Rana", confidence=None)))
+
+    r_high = one(out_high, "personal_info", "first_name")
+    r_low = one(out_low, "personal_info", "first_name")
+    r_none = one(out_none, "personal_info", "first_name")
+
+    assert r_high.confidence == r_low.confidence == r_none.confidence == 1.0
+    assert r_high.model_confidence == 0.99
+    assert r_low.model_confidence == 0.10
+    assert r_none.model_confidence is None
+
+
+def test_spec_vetting_value_confidence_is_one():
+    """Vetting value -> 1.0."""
+    parser = VettingParser(seed_skill_catalog())
+    payload = '{"skills": [{"name": "Python", "level": 5}]}'
+    result = parser.parse(payload, "vet.json")
+    assert len(result.records) == 1
+    assert result.records[0].confidence == 1.0
+    assert result.records[0].confidence_parts == ConfidenceParts(1.0, 1.0, 1.0, 1.0)
+    assert result.records[0].model_confidence is None
+
+
+def test_spec_m04_boost_and_capping():
+    """M-04: two agreeing sources 0.90 and 0.88 -> boost applied once; 0.98 caps at 1.00."""
+    r1 = FieldRecord(
+        field_id=1, source="1", entity="personal_info", entity_type="personal_info",
+        field_name="city", raw_value="Amman", value="Amman", confidence=0.90,
+        evidence="Amman", page=1, evidence_status="verified", rule="llm",
+        confidence_parts=ConfidenceParts(base=0.90),
+    )
+    r2 = FieldRecord(
+        field_id=2, source="2", entity="personal_info", entity_type="personal_info",
+        field_name="city", raw_value="Amman", value="Amman", confidence=0.88,
+        evidence="Amman", page=1, evidence_status="verified", rule="llm",
+        confidence_parts=ConfidenceParts(base=0.88),
+    )
+    apply_agreement_boost([r1, r2])
+    # Highest was 0.90, boosted by 0.05 -> 0.95
+    assert r1.confidence == 0.95
+    assert r2.confidence == 0.95
+
+    # Capping at 1.00
+    r3 = FieldRecord(
+        field_id=3, source="1", entity="personal_info", entity_type="personal_info",
+        field_name="city", raw_value="Amman", value="Amman", confidence=0.98,
+        evidence="Amman", page=1, evidence_status="verified", rule="llm",
+        confidence_parts=ConfidenceParts(base=0.98),
+    )
+    r4 = FieldRecord(
+        field_id=4, source="2", entity="personal_info", entity_type="personal_info",
+        field_name="city", raw_value="Amman", value="Amman", confidence=0.98,
+        evidence="Amman", page=1, evidence_status="verified", rule="llm",
+        confidence_parts=ConfidenceParts(base=0.98),
+    )
+    apply_agreement_boost([r3, r4])
+    # 0.98 + 0.05 = 1.03 -> capped at 1.00
+    assert r3.confidence == 1.00
+    assert r4.confidence == 1.00
+
+
+def test_spec_review_threshold_setting_controls_outcome():
+    """Value below threshold -> review item; at or above -> none; changing setting changes outcome."""
+    doc = scanned_document("Rana Odeh\nAmman, Jordan\n", confidence=0.62)
+
+    # Under threshold 0.65 -> LOW_CONFIDENCE flag
+    out_default = build(doc, threshold=0.65, **personal(first_name=f("Rana", "Rana", page=1)))
+    rec_default = one(out_default, "personal_info", "first_name")
+    assert rec_default.confidence == 0.62
+    assert ReviewReason.LOW_CONFIDENCE in rec_default.review_reasons
+
+    # Under lowered threshold 0.60 -> Accepted (no review flag)
+    out_lowered = build(doc, threshold=0.60, **personal(first_name=f("Rana", "Rana", page=1)))
+    rec_lowered = one(out_lowered, "personal_info", "first_name")
+    assert rec_lowered.confidence == 0.62
+    assert ReviewReason.LOW_CONFIDENCE not in rec_lowered.review_reasons
+
+
+def test_spec_no_intermediate_rounding():
+    """No intermediate rounding: 0.91 x 0.85 x 0.80 computed then rounded once."""
+    p1 = ConfidenceParts(base=0.91, evidence=0.85, validation=0.80, mapping=1.0)
+    # Exact float: 0.91 * 0.85 * 0.80 = 0.6188 -> round(0.6188, 2) = 0.62
+    assert p1.product == 0.62
+
+    p2 = ConfidenceParts(base=0.91, evidence=0.60, validation=1.0, mapping=0.85)
+    # Exact float: 0.91 * 0.60 * 0.85 = 0.4641 -> round(0.4641, 2) = 0.46
+    # Note: If intermediate rounding had occurred: round(0.91*0.60, 2)=0.55; 0.55*0.85=0.4675 -> 0.47
+    assert p2.product == 0.46
+
+
+def test_spec_missing_confidence_in_llm_output_validates_and_produces_identical_result():
+    """Missing confidence in LLM output validates and produces the same final confidence."""
+    # Payload completely omitting the 'confidence' key on fields
+    payload_without_conf = {
+        "personal_info": {
+            "first_name": {"value": "Rana", "evidence": "Rana", "page": 1},
+            "last_name": {"value": "Odeh", "evidence": "Odeh", "page": 1},
+            "emails": [{"value": "rana@example.com", "evidence": "rana@example.com", "page": 1}],
+            "phones": [],
+            "city": {"value": None, "evidence": None, "page": None},
+            "country": {"value": None, "evidence": None, "page": None},
+            "title": {"value": None, "evidence": None, "page": None},
+            "summary": {"value": None, "evidence": None, "page": None},
+        },
+        "work_experience": [],
+        "education": [],
+        "skills": [],
+        "certifications": [],
+        "projects": [],
+        "languages": [],
+        "links": [],
+    }
+    validated_without = CVExtraction.model_validate(payload_without_conf)
+    assert validated_without.personal_info.first_name.confidence is None
+
+    # Payload explicitly including 'confidence': 0.95
+    payload_with_conf = {
+        "personal_info": {
+            "first_name": {"value": "Rana", "confidence": 0.95, "evidence": "Rana", "page": 1},
+            "last_name": {"value": "Odeh", "confidence": 0.95, "evidence": "Odeh", "page": 1},
+            "emails": [{"value": "rana@example.com", "confidence": 0.95, "evidence": "rana@example.com", "page": 1}],
+            "phones": [],
+            "city": {"value": None, "evidence": None, "page": None},
+            "country": {"value": None, "evidence": None, "page": None},
+            "title": {"value": None, "evidence": None, "page": None},
+            "summary": {"value": None, "evidence": None, "page": None},
+        },
+        "work_experience": [],
+        "education": [],
+        "skills": [],
+        "certifications": [],
+        "projects": [],
+        "languages": [],
+        "links": [],
+    }
+    validated_with = CVExtraction.model_validate(payload_with_conf)
+    assert validated_with.personal_info.first_name.confidence == 0.95
+
+    doc = text_document("Rana Odeh\nrana@example.com\n")
+    builder = FieldRecordBuilder(
+        CountryCatalog(SEED_COUNTRIES), seed_skill_catalog(),
+        FieldRecordSettings(confidence_threshold=DEFAULT_REVIEW_CONFIDENCE),
+    )
+    out_without = builder.build(validated_without, doc)
+    out_with = builder.build(validated_with, doc)
+
+    rec_without = one(out_without, "personal_info", "first_name")
+    rec_with = one(out_with, "personal_info", "first_name")
+
+    # Final confidence is identical (1.0), only model_confidence differs
+    assert rec_without.confidence == rec_with.confidence == 1.0
+    assert rec_without.confidence_parts == rec_with.confidence_parts
+    assert rec_without.model_confidence is None
+    assert rec_with.model_confidence == 0.95
+

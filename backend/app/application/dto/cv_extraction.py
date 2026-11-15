@@ -27,7 +27,12 @@ class _Strict(BaseModel):
 
 
 class _EvidenceMixin(_Strict):
-    confidence: float = Field(ge=0, le=1, description="How sure the extraction is, 0 to 1")
+    confidence: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="Optional diagnostic confidence score from the model, 0 to 1",
+    )
     evidence: str | None = Field(
         description="Exact quote copied from the CV text that contains this value; "
                     "null only when value is null"

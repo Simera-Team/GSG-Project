@@ -32,3 +32,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_column('source_file', 'rule')
+
