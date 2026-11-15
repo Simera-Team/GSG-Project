@@ -52,12 +52,16 @@ class PersonalInfoRecord(_Strict):
     first_name: str | None = Field(default=None, max_length=100)
     last_name: str | None = Field(default=None, max_length=100)
     email: EmailStr | None = None
+    primary_email: EmailStr | None = None
+    emails: list[EmailStr] = Field(default_factory=list)
     phone: str | None = Field(default=None, max_length=50)
+    primary_phone: str | None = Field(default=None, max_length=50)
+    phones: list[str] = Field(default_factory=list)
     city: str | None = Field(default=None, max_length=100)
     country: CountryValue | None = None
     title: str | None = Field(default=None, max_length=255)
     summary: str | None = None
-    field_ids: dict[str, int] = Field(default_factory=dict, description="field name -> field record id")
+    field_ids: dict[str, int | list[int]] = Field(default_factory=dict, description="field name -> field record id(s)")
 
 
 class ExperienceRecord(_Matched):

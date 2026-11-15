@@ -19,9 +19,11 @@ class FakeAI(IAIClient):
     def __init__(self, *replies):
         self.replies = list(replies)
         self.calls = 0
+        self.user_prompts = []
 
     def generate_structured(self, system_prompt, user_prompt, json_schema):
         self.calls += 1
+        self.user_prompts.append(user_prompt)
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
@@ -66,7 +68,12 @@ def test_valid_first_try_builds_profile_from_field_records():
     # FR-063: every profile record points at existing field records
     ids = {r.field_id for r in result.field_records}
     assert set(job.field_ids) <= ids
-    assert set(profile.personal_info.field_ids.values()) <= ids
+    personal_ids = {
+        fid
+        for v in profile.personal_info.field_ids.values()
+        for fid in (v if isinstance(v, list) else [v])
+    }
+    assert personal_ids <= ids
 
 
 def test_unknown_skill_goes_to_review_and_stays_out_of_profile():
@@ -116,38 +123,85 @@ def test_low_confidence_is_flagged():
     assert (held.confidence, held.model_confidence) == (0.5, 0.99)
 
 
-def test_invalid_then_valid_retries_with_increasing_wait():
+def test_invalid_then_valid_retries_immediately_with_errors_in_prompt():
+    """Test 6: Invalid, then valid: 2 attempts, no sleep called, the second prompt contains the errors."""
     waits = []
-    ai = FakeAI("not json", '{"personal_info": {}}', as_json(answer()))
+    ai = FakeAI("not json", as_json(answer()))
     result = make_service(ai, waits).process(DOC)
 
+    assert ai.calls == 2
+    assert len(result.attempts) == 2
+    assert waits == []  # Retry immediately, no wait
     assert [a.outcome for a in result.attempts] == [
-        AttemptOutcome.INVALID, AttemptOutcome.INVALID, AttemptOutcome.VALID]
+        AttemptOutcome.INVALID, AttemptOutcome.VALID]
     assert [a.trigger for a in result.attempts] == [
-        AttemptTrigger.FIRST_RUN, AttemptTrigger.AUTO_RETRY, AttemptTrigger.AUTO_RETRY]
-    assert waits == [2.0, 4.0]
+        AttemptTrigger.FIRST_RUN, AttemptTrigger.AUTO_RETRY]
+    assert result.attempts[0].carried_feedback is False
+    assert result.attempts[1].carried_feedback is True
+    assert "Your previous answer did not match the schema:" in ai.user_prompts[1]
     assert result.profile is not None
 
 
-def test_three_failures_send_job_to_review_without_profile():
-    ai = FakeAI(LLMProviderError("server error 503", retryable=True),
-                "not json",
-                LLMProviderError("network error", retryable=True))
-    result = make_service(ai).process(DOC)
+def test_invalid_twice_stops_after_two_attempts_and_goes_to_review():
+    """Test 7: Invalid twice: stops after 2 attempts and goes to review with the reason."""
+    waits = []
+    ai = FakeAI("not json", '{"personal_info": {}}')
+    result = make_service(ai, waits).process(DOC)
+
+    assert ai.calls == 2
+    assert len(result.attempts) == 2
+    assert waits == []  # No wait for invalid retries
+    assert result.status == JobStatus.FAILED
+    assert result.profile is None
+    assert result.review_items[0].reasons == [ReviewReason.LLM_FAILED]
+    assert "invalid answer" in result.review_items[0].message
+
+
+def test_timeout_timeout_valid_three_attempts_with_backoff():
+    """Test 8: Timeout, timeout, valid: 3 attempts with backoff."""
+    waits = []
+    ai = FakeAI(
+        LLMProviderError("timeout", retryable=True),
+        LLMProviderError("timeout", retryable=True),
+        as_json(answer()),
+    )
+    result = make_service(ai, waits).process(DOC)
 
     assert ai.calls == 3
+    assert len(result.attempts) == 3
+    assert waits == [2.0, 4.0]
+    assert [a.outcome for a in result.attempts] == [
+        AttemptOutcome.ERROR, AttemptOutcome.ERROR, AttemptOutcome.VALID]
+    assert result.profile is not None
+
+
+def test_timeout_then_invalid_twice_stops_at_three_attempts_total():
+    """Test 9: Timeout, then invalid twice: stops at 3 attempts in total."""
+    waits = []
+    ai = FakeAI(
+        LLMProviderError("timeout", retryable=True),
+        "not json",
+        '{"personal_info": {}}',
+    )
+    result = make_service(ai, waits).process(DOC)
+
+    assert ai.calls == 3
+    assert len(result.attempts) == 3
+    assert waits == [2.0]  # Only provider timeout waited; invalid was immediate
+    assert [a.outcome for a in result.attempts] == [
+        AttemptOutcome.ERROR, AttemptOutcome.INVALID, AttemptOutcome.INVALID]
     assert result.status == JobStatus.FAILED
-    assert result.profile is None and result.field_records == []
-    item = result.review_items[0]
-    assert item.reasons == [ReviewReason.LLM_FAILED]
-    assert item.field_name is None and item.source == "rana.docx"   # FR-042
-    assert "network error" in item.message
+    assert result.profile is None
 
 
 def test_non_retryable_error_stops_immediately():
-    ai = FakeAI(LLMProviderError("400: API key not valid", retryable=False))
-    result = make_service(ai).process(DOC)
+    """Test 10: Non-retryable provider error (e.g. 401): 1 attempt, fails at once."""
+    waits = []
+    ai = FakeAI(LLMProviderError("401: Unauthorized", retryable=False))
+    result = make_service(ai, waits).process(DOC)
     assert ai.calls == 1
+    assert len(result.attempts) == 1
+    assert waits == []
     assert result.status == JobStatus.FAILED
 
 

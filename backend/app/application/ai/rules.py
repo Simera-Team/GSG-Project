@@ -110,7 +110,9 @@ RULE_DESCRIPTIONS: Final[dict[RuleId, str]] = {
     RuleId.R_09: "Skill or country matched nothing in the tables; system decision.",
     RuleId.M_01: "Entities with the same name and overlapping dates are one entity.",
     RuleId.M_02: "List field from several sources merged as a union without duplicates.",
-    RuleId.M_03: "Contact list merged as a union; primary value from the newest source.",
+    RuleId.M_03: "Contact list (email, phone) merged as a union across all "
+                 "sources, de-duplicated on normalised value; primary from the "
+                 "newest source. Never creates a review item or candidate question.",
     RuleId.M_04: "Sources agree after normalization; confidence boosted once.",
     RuleId.C_01: "A vetted value exists and wins.",
     RuleId.C_02: "Values differ and the newer source wins.",

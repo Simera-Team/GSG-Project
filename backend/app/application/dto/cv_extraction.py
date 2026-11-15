@@ -54,8 +54,8 @@ class ProficiencyField(_EvidenceMixin):
 class PersonalInfo(_Strict):
     first_name: TextField
     last_name: TextField
-    email: TextField
-    phone: TextField
+    emails: list[TextField] = Field(description="Every email the document states")
+    phones: list[TextField] = Field(description="Every phone number the document states")
     city: TextField
     country: TextField
     title: TextField = Field(description="Professional headline or target role")

@@ -75,16 +75,20 @@ def one(outcome, entity_type, field_name, value=None) -> FieldRecord:
     return found[0]
 
 
-def personal(first_name=None, email=None, city=None, phone=None, **rest):
+def personal(first_name=None, email=None, city=None, phone=None, emails=None, phones=None, **rest):
     """An answer holding only the personal fields a test cares about.
 
     The other entity lists are emptied: a test about one field should not also
     be asserting on the sample CV's default job and skills, whose snippets are
     not in the short text the test wrote.
     """
+    if emails is None:
+        emails = [email] if email is not None else []
+    if phones is None:
+        phones = [phone] if phone is not None else []
     return {"personal_info": {
-        "first_name": first_name or f(), "last_name": f(), "email": email or f(),
-        "phone": phone or f(), "city": city or f(), "country": f(),
+        "first_name": first_name or f(), "last_name": f(), "emails": emails,
+        "phones": phones, "city": city or f(), "country": f(),
         "title": f(), "summary": f(),
     }, "work_experience": [], "education": [], "skills": [], "certifications": [],
         "projects": [], "languages": [], "links": [], **rest}

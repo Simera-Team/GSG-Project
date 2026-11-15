@@ -20,6 +20,7 @@ import itertools
 import json
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
@@ -46,8 +47,11 @@ from app.domain.services.entity_matching import (
     match_entities,
 )
 
-PERSONAL_FIELDS = ["first_name", "last_name", "email", "phone", "city",
+PERSONAL_FIELDS = ["first_name", "last_name", "city",
                    "country", "title", "summary"]
+
+#: Contact fields merged as a union (M-03): no conflict, no review item.
+CONTACT_LIST_FIELDS = ["email", "phone"]
 
 
 @dataclass
@@ -143,6 +147,44 @@ class ProfileBuilder:
                 decisions[r.field_name].append(r)
             elif r.value is not None:
                 by_field[r.field_name].append(r)
+
+        # M-03: contact list fields — union all accepted values, de-duplicate
+        # on normalised value, primary from newest source.  Never a review item
+        # or a candidate question.
+        for name in CONTACT_LIST_FIELDS:
+            candidates = by_field.get(name, [])
+            if not candidates:
+                continue
+
+            # Group by normalised value to collect all field_ids (FR-063)
+            groups: dict[str, list[FieldRecord]] = defaultdict(list)
+            for r in candidates:
+                groups[_key(r.value)].append(r)
+
+            # For each unique value, find its newest representative record
+            unique_entries = []
+            for recs in groups.values():
+                best = max(recs, key=_contact_recency_key)
+                all_ids = [r.field_id for r in recs]
+                unique_entries.append((best, all_ids))
+
+            # Order: newest source (uploaded_at, then source id); within one source, first listed
+            unique_entries.sort(key=lambda item: _contact_recency_key(item[0]), reverse=True)
+
+            primary = unique_entries[0][0] if unique_entries else None
+            plural = name + "s"  # emails, phones
+
+            if primary:
+                info[name] = primary.value
+                info[f"primary_{name}"] = primary.value
+                info["field_ids"][name] = primary.field_id
+                info["field_ids"][f"primary_{name}"] = primary.field_id
+
+            info[plural] = [entry[0].value for entry in unique_entries]
+            all_plural_ids = []
+            for _, fids in unique_entries:
+                all_plural_ids.extend(fids)
+            info["field_ids"][plural] = all_plural_ids
 
         for name in PERSONAL_FIELDS:
             # A reviewer's decision settles the field across all sources (FR-043);
@@ -380,3 +422,15 @@ def _conflict_message(outcome) -> str:
                 "only the candidate can confirm it (C-05).")
     return ("Sources disagree and no rule decides; a reviewer picks from the "
             "values below or enters a corrected one (C-06).")
+
+
+def _contact_recency_key(record: FieldRecord):
+    """Recency key for M-03: newest source (uploaded_at, source_id); within one source, first listed."""
+    uploaded = record.source_uploaded_at or datetime.min
+    if uploaded.tzinfo is None:
+        uploaded = uploaded.replace(tzinfo=timezone.utc)
+    try:
+        src_num = int(record.source)
+    except (ValueError, TypeError):
+        src_num = 0
+    return (uploaded, src_num, str(record.source), -record.field_id)

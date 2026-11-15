@@ -30,10 +30,10 @@ def test_disallowed_fields_are_dropped_and_reported():
 
 def test_missing_required_field_is_invalid():
     data = answer()
-    del data["personal_info"]["email"]
+    del data["personal_info"]["emails"]
     result = validate_llm_output(as_json(data))
     assert not result.is_valid
-    assert any("personal_info.email" in e for e in result.errors)
+    assert any("personal_info.emails" in e for e in result.errors)
 
 
 def test_wrong_type_and_out_of_range_confidence_are_invalid():
@@ -47,10 +47,10 @@ def test_wrong_type_and_out_of_range_confidence_are_invalid():
 
 def test_null_value_loses_evidence():
     data = answer()
-    data["personal_info"]["phone"] = {"value": None, "confidence": 1,
-                                      "evidence": "invented", "page": 1}
+    data["personal_info"]["phones"] = [{"value": None, "confidence": 1,
+                                        "evidence": "invented", "page": 1}]
     result = validate_llm_output(as_json(data))
-    assert result.extraction.personal_info.phone.evidence is None
+    assert result.extraction.personal_info.phones[0].evidence is None
 
 
 TEXT = "SARA YOUSEF\nsara.yousef@example.com ● Ramallah, Palestine\nWaiter  06/2012 - 03/2017"

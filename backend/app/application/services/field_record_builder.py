@@ -273,12 +273,25 @@ class FieldRecordBuilder:
             if current and current.value is True and end and isinstance(end.value, dict):
                 end.review_reasons.append(ReviewReason.CURRENT_JOB_CONFLICT)
 
+    # Schema list fields whose items should be stored as individual records
+    # under a singular field name (emails -> email, phones -> phone).
+    _CONTACT_LIST_FIELDS: dict[str, str] = {"emails": "email", "phones": "phone"}
+
     def _add_entity(self, outcome, entity: BaseModel, entity_label, entity_type,
                     document, checker):
         for name in type(entity).model_fields:
             value = getattr(entity, name)
             if isinstance(entity, Link) and name == "type":
                 continue  # stored together with the url record below
+            if name in self._CONTACT_LIST_FIELDS:
+                # emails/phones: one record per item, using the singular name
+                singular = self._CONTACT_LIST_FIELDS[name]
+                for item in value:
+                    record = self._record(item, entity_label, entity_type,
+                                          singular, document, checker, outcome)
+                    if record is not None:
+                        outcome.records.append(record)
+                continue
             if isinstance(value, list):     # e.g. project tech_stack
                 for i, item in enumerate(value, start=1):
                     record = self._record(item, entity_label, entity_type,

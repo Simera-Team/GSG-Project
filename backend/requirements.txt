@@ -16,3 +16,5 @@ onnxruntime
 google-genai
 aio-pika
 langchain-core
+pytest
+httpx2

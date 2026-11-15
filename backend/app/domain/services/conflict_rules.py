@@ -103,8 +103,6 @@ FIELD_POLICIES: dict[tuple[str, str], FieldPolicy] = {
     # asked of them rather than guessed by a reviewer (FR-044).
     ("personal_info", "city"): FieldPolicy(recency=True, fallback=Fallback.CANDIDATE),
     ("personal_info", "country"): FieldPolicy(recency=True, fallback=Fallback.CANDIDATE),
-    ("personal_info", "email"): FieldPolicy(recency=True, fallback=Fallback.CANDIDATE),
-    ("personal_info", "phone"): FieldPolicy(recency=True, fallback=Fallback.CANDIDATE),
 
     # Dates: recency is allowed, and C-04 settles a precision difference
     # before it ever counts as a conflict.

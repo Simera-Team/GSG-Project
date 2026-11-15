@@ -15,8 +15,8 @@ def answer(**overrides) -> dict:
         "personal_info": {
             "first_name": f("Rana", "Rana Odeh"),
             "last_name": f("Odeh", "Rana Odeh"),
-            "email": f("rana.odeh@example.com"),
-            "phone": f(),
+            "emails": [f("rana.odeh@example.com")],
+            "phones": [],
             "city": f("Amman", "Amman, Jordan 11942"),
             "country": f("Jordan", "Amman, Jordan 11942"),
             "title": f(),

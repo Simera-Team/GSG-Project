@@ -133,39 +133,72 @@ class CVProcessingService:
                                 self.confidence_threshold, extracted.rejected)
 
     def _run_attempts(self, document, first_trigger, log: AttemptLog):
-        prompt = build_user_prompt(document.text, document.hyperlinks,
-                                   document.ocr_confidence, document.page_texts)
+        base_prompt = build_user_prompt(document.text, document.hyperlinks,
+                                         document.ocr_confidence, document.page_texts)
+        prompt = base_prompt
         last_error = "unknown error"
+        invalid_count = 0
+        carried_feedback = False
+        provider_attempt = 0
 
         for number in range(1, self.max_attempts + 1):
             trigger = first_trigger if number == 1 else AttemptTrigger.AUTO_RETRY
             started = _now()
-            wait = self.retry_base_seconds * 2 ** (number - 1)
 
             try:
                 response = self.ai_client.generate_structured(SYSTEM_PROMPT, prompt, self.schema)
             except LLMProviderError as exc:
+                provider_attempt += 1
                 last_error = str(exc)
                 log.append(self._attempt(number, trigger, started, AttemptOutcome.ERROR,
-                                         self.ai_client.model, None, None, last_error))
+                                         self.ai_client.model, None, None, last_error,
+                                         carried_feedback=carried_feedback))
                 if not exc.retryable:
                     break                      # e.g. invalid key: another try cannot help
+
+                if number >= self.max_attempts:
+                    break
+
+                wait = self.retry_base_seconds * (2 ** (provider_attempt - 1))
                 wait = max(wait, exc.retry_after or 0)
+                self.sleep(wait)
             else:
                 validation = self._validate(response)
                 outcome = AttemptOutcome.VALID if validation.is_valid else AttemptOutcome.INVALID
                 error = None if validation.is_valid else "; ".join(validation.errors[:5])
                 log.append(self._attempt(number, trigger, started, outcome,
                                          response.model_version, response.text,
-                                         validation.to_dict(), error))
+                                         validation.to_dict(), error,
+                                         carried_feedback=carried_feedback))
                 if validation.is_valid:
                     return validation, None
+
+                invalid_count += 1
                 last_error = f"invalid answer ({error})"
 
-            if number < self.max_attempts:
-                self.sleep(wait)
+                # At most 2 attempts in total for invalid output
+                if invalid_count >= 2 or number >= self.max_attempts:
+                    break
+
+                # Retry IMMEDIATELY, with no wait, appending validation errors as feedback
+                feedback = self._format_validation_feedback(validation.errors)
+                prompt = (
+                    f"{base_prompt}\n\n"
+                    f"Your previous answer did not match the schema: {feedback}. "
+                    "Return the complete JSON again, fixing these errors."
+                )
+                carried_feedback = True
 
         return None, last_error
+
+    @staticmethod
+    def _format_validation_feedback(errors: list[str]) -> str:
+        """Format up to 10 validation errors (field paths and messages only, <= 1000 chars)."""
+        selected = errors[:10]
+        formatted = "; ".join(selected)
+        if len(formatted) > 1000:
+            formatted = formatted[:1000].rstrip()
+        return formatted
 
     @staticmethod
     def _validate(response) -> ValidationResult:
@@ -174,7 +207,8 @@ class CVProcessingService:
         return validate_llm_output(response.text)
 
     def _attempt(self, number, trigger, started, outcome, model_version,
-                 llm_response, validation, error) -> ProcessingAttempt:
+                 llm_response, validation, error,
+                 carried_feedback: bool = False) -> ProcessingAttempt:
         return ProcessingAttempt(
             attempt_number=number,
             trigger=trigger,
@@ -186,6 +220,7 @@ class CVProcessingService:
             llm_response=llm_response,
             validation_result=validation,
             error=error,
+            carried_feedback=carried_feedback,
         )
 
     def _failed(self, document, log, review_ids, reason, message) -> ProcessingResult:

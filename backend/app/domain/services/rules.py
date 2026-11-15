@@ -72,6 +72,9 @@ RULE_DESCRIPTIONS: dict[str, str] = {
     "R-10": "An entity could equally be either of several entities from "
             "another source, so nothing was merged and a person decides which "
             "of them it is.",
+    "M-03": "Contact list (email, phone) merged as a union across all sources, "
+            "de-duplicated on the normalised value; primary from the newest "
+            "source. Never creates a review item or a candidate question.",
     "M-04": "Two or more different sources state the same value, so the "
             "agreement itself raised its confidence: the highest of their "
             "scores plus 0.05, capped at 1.00, added once however many "

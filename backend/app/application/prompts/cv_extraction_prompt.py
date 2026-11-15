@@ -66,7 +66,9 @@ personal_info
 - first_name / last_name: split the full name; if the name is written in capitals \
 ("SARA YOUSEF"), return it in normal case ("Sara", "Yousef"). Ignore suffixes such \
 as "- Pilot CV".
-- email, phone: exactly as written (keep "+44 (0) 7700 900 456" as is).
+- emails: every email address stated in the document, each as a separate item.
+- phones: every phone number stated in the document, each exactly as written \
+(keep "+44 (0) 7700 900 456" as is).
 - city / country: from the address or location line. "Amman, Jordan 11181" gives \
 city "Amman" and country "Jordan"; drop street, postcode and region. A LinkedIn \
 location like "Palestinian Authority" is a country-level value with no city.
