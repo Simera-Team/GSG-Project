@@ -1,0 +1,43 @@
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simera-backend"
+version = "0.1.0"
+description = "Simera Resume Parsing Backend"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy",
+    "psycopg[binary]",
+    "alembic",
+    "pydantic-settings",
+    "python-multipart",
+    "pydantic[email]",
+    "pwdlib[argon2]",
+    "PyJWT",
+    "filetype",
+    "pymupdf",
+    "python-docx",
+    "rapidocr",
+    "onnxruntime",
+    "google-genai",
+    "aio-pika"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "httpx2"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

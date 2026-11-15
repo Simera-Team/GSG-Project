@@ -14,7 +14,18 @@ __pycache__/
 
 # Uploaded files
 uploads/
-storage/
+# Where LocalFileStorage saves uploads. Don't use a bare "storage/" here:
+# it would also hide the code folder app/infrastructure/storage/.
+**/storage/cvs/
 
 # Logs
 *.log
+
+*.egg-info/
+# Output of scripts/extract_samples.py (local checks only)
+extraction_output/
+
+# Output of scripts/process_samples.py (local checks only)
+backend/processing_output/
+
+docs/
