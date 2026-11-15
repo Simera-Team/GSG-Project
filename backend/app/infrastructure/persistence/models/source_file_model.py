@@ -83,10 +83,16 @@ class SourceFileModel(Base):
             "done",
             "failed",
             "needs_review",
+            "rejected",
             name="file_status"
         ),
         nullable=False,
         server_default="uploaded"
+    )
+
+    rule: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True
     )
 
     extraction_method: Mapped[str | None] = mapped_column(

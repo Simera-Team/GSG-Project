@@ -38,7 +38,8 @@ class IProcessingRepository(ABC):
                         extraction_method: str | None = None,
                         ocr_confidence: float | None = None,
                         llm_response: dict | None = None,
-                        retries: int | None = None, finished: bool = False) -> None: ...
+                        retries: int | None = None, finished: bool = False,
+                        rule: str | None = None) -> None: ...
 
     @abstractmethod
     def next_attempt_number(self, file_id: int) -> int: ...

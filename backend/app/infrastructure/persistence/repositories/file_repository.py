@@ -76,5 +76,6 @@ class SourceFileRepository(ISourceFileRepository):
             llm_response=model.llm_response,
             uploaded_at=model.uploaded_at,
             finished_at=model.finished_at,
-            num_of_retries=model.num_of_retries
+            num_of_retries=model.num_of_retries,
+            rule=getattr(model, "rule", None),
         )

@@ -72,6 +72,8 @@ RULE_DESCRIPTIONS: dict[str, str] = {
     "R-10": "An entity could equally be either of several entities from "
             "another source, so nothing was merged and a person decides which "
             "of them it is.",
+    "R-11": "The source is not written in English. Only CVs written in English "
+            "are accepted.",
     "M-03": "Contact list (email, phone) merged as a union across all sources, "
             "de-duplicated on the normalised value; primary from the newest "
             "source. Never creates a review item or a candidate question.",

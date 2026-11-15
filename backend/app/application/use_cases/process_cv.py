@@ -197,13 +197,21 @@ class ProcessCVUseCase:
                 status = JobStatus.NEEDS_REVIEW
 
         answer = result.attempts[valid].llm_response if valid is not None else None
+        if status == JobStatus.FAILED:
+            file_error = result.reason
+        elif status == JobStatus.REJECTED:
+            file_error = result.message or result.reason
+        else:
+            file_error = None
+
         self.repo.set_file_status(
             file_id, status,
-            error=result.reason if status == JobStatus.FAILED else None,
+            error=file_error,
             extraction_method=document.extraction_method if document else None,
             ocr_confidence=document.ocr_confidence if document else None,
             llm_response=json.loads(answer) if answer else None,
             retries=max(0, first_number + len(result.attempts) - 2),
             finished=True,
+            rule=getattr(result, "rule", None),
         )
         return status

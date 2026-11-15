@@ -56,10 +56,12 @@ class SqlProcessingRepository(IProcessingRepository):
 
     def set_file_status(self, file_id, status, *, error=None, extraction_method=None,
                         ocr_confidence=None, llm_response=None, retries=None,
-                        finished=False) -> None:
+                        finished=False, rule=None) -> None:
         model = self.db.get(SourceFileModel, file_id)
         model.status = status
         model.error_message = error
+        if rule is not None and hasattr(model, "rule"):
+            model.rule = rule
         if extraction_method is not None:
             model.extraction_method = extraction_method
         if ocr_confidence is not None:

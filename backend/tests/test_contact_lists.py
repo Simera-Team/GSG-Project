@@ -153,3 +153,4 @@ def test_city_still_conflicts_and_reaches_candidate_c05():
     assert city_reviews[0].reasons == [ReviewReason.SOURCE_CONFLICT]
     assert "C-05" in city_reviews[0].message
     assert result.profile.personal_info.city is None
+

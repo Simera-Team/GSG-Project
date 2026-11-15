@@ -15,6 +15,7 @@ Requirements covered here:
 """
 
 import itertools
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ from app.application.services.llm_output_validator import ValidationResult, vali
 from app.application.services.profile_builder import ProfileBuilder
 from app.core.exceptions import LLMProviderError
 from app.domain.services.confidence import DEFAULT_REVIEW_CONFIDENCE
+from app.domain.services.language import LanguageRule, is_english
 from app.domain.entities.field_record import (
     FieldRecord,
     RejectedValue,
@@ -49,10 +51,14 @@ from app.domain.services.countries import CountryCatalog
 from app.domain.services.skills import SkillCatalog
 
 
+logger = logging.getLogger(__name__)
+
+
 class JobStatus:
     DONE = "done"                   # profile built, nothing needs a person
     NEEDS_REVIEW = "needs_review"   # profile built, some fields wait for a reviewer
     FAILED = "failed"               # no profile; whole job is in the review queue
+    REJECTED = "rejected"           # file rejected (e.g. unsupported language)
 
 
 @dataclass
@@ -67,11 +73,15 @@ class ProcessingResult:
     # Values dropped by an R- rule: not field records and not review items,
     # but kept so a drop can be audited (R-03, NFR-028).
     rejected: list[RejectedValue] = field(default_factory=list)
+    rule: str | None = None
+    message: str | None = None
 
     def to_dict(self) -> dict:
         return {
             "status": self.status,
             "reason": self.reason,
+            "rule": self.rule,
+            "message": self.message,
             "confidence_threshold": self.confidence_threshold,
             "attempts": [a.to_dict() for a in self.attempts],
             "review_items": [r.to_dict() for r in self.review_items],
@@ -105,6 +115,22 @@ class CVProcessingService:
         if not document.text.strip():
             return self._failed(document, log, review_ids, ReviewReason.NO_TEXT,
                                 "No text could be read from the file")
+
+        # R-11: Only English sources are accepted. Check language before any LLM call.
+        if not is_english(document.text):
+            logger.info("File %s rejected: unsupported_language (rule: %s)",
+                        document.source_name, LanguageRule.UNSUPPORTED_LANGUAGE)
+            return ProcessingResult(
+                status=JobStatus.REJECTED,
+                reason="unsupported_language",
+                attempts=(),
+                field_records=[],
+                review_items=[],
+                profile=None,
+                confidence_threshold=self.confidence_threshold,
+                rule=LanguageRule.UNSUPPORTED_LANGUAGE,
+                message="Only CVs written in English are accepted. Please upload an English version.",
+            )
 
         validation, last_error = self._run_attempts(document, trigger, log)
         if validation is None:

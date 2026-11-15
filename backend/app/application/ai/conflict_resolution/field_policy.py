@@ -115,10 +115,11 @@ FIELD_POLICIES: Final[dict[tuple[EntityType, FieldName], FieldPolicy]] = {
         kind=FieldKind.SINGLE, rules=(RuleId.M_01, RuleId.C_02)
     ),
     # A degree level is a claim, so an unresolved one goes to a reviewer (C-06)
-    # rather than back to the candidate who made it.
+    # rather than back to the candidate who made it. Recency and source priority
+    # are both off, so it reaches C-06 directly.
     (EntityType.EDUCATION, FieldName.DEGREE): FieldPolicy(
         kind=FieldKind.SINGLE,
-        rules=(RuleId.C_02,),
+        rules=(),
         fallback=ConflictFallback.REVIEWER,
     ),
     (EntityType.EDUCATION, FieldName.FIELD): _SINGLE_NEWER,

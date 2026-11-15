@@ -61,6 +61,7 @@ class RuleId(str, Enum):
     R_07 = "R-07"
     R_08 = "R-08"
     R_09 = "R-09"
+    R_11 = "R-11"
 
     # --- Matching (merge stage) -----------------------------------------
     M_01 = "M-01"
@@ -108,6 +109,7 @@ RULE_DESCRIPTIONS: Final[dict[RuleId, str]] = {
     RuleId.R_07: "Skill on the soft-skill stop list.",
     RuleId.R_08: "Ambiguous short skill name accepted on its evidence alone.",
     RuleId.R_09: "Skill or country matched nothing in the tables; system decision.",
+    RuleId.R_11: "The source is not written in English. Only CVs written in English are accepted.",
     RuleId.M_01: "Entities with the same name and overlapping dates are one entity.",
     RuleId.M_02: "List field from several sources merged as a union without duplicates.",
     RuleId.M_03: "Contact list (email, phone) merged as a union across all "

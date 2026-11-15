@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-FileStatus = Literal["uploaded", "processing", "done", "needs_review", "failed"]
+FileStatus = Literal["uploaded", "processing", "done", "needs_review", "failed", "rejected"]
 
 
 class UploadCVResponse(BaseModel):
@@ -32,6 +32,7 @@ class FileOut(BaseModel):
     finished_at: datetime | None
     attempts: int = Field(description="LLM attempts so far")
     open_reviews: int = Field(description="fields of this file waiting for a reviewer")
+    rule: str | None = None
 
 
 class FileListOut(BaseModel):

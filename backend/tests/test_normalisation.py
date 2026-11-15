@@ -315,11 +315,12 @@ def test_every_rule_identifier_has_a_description():
     from app.domain.services.countries import GeoRule
     from app.domain.services.dates import DateRule
     from app.domain.services.entity_matching import MatchRule
+    from app.domain.services.language import LanguageRule
     from app.domain.services.rules import describe
     from app.domain.services.skills import SkillRule
 
     for holder in (DateRule, GeoRule, ContactRule, SkillRule, ConflictRule,
-                   MatchRule):
+                   MatchRule, LanguageRule):
         for name, value in vars(holder).items():
             if name.startswith("_") or not isinstance(value, str):
                 continue

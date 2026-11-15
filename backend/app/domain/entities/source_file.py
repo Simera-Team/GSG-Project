@@ -23,3 +23,4 @@ class SourceFile:
     uploaded_at: datetime | None = None
     finished_at: datetime | None = None
     num_of_retries: int = 0
+    rule: str | None = None
