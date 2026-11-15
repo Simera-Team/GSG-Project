@@ -1,4 +1,5 @@
 import { ApiError, apiRequest } from "./apiClient";
+import { staffReturnPath } from "./roleAccess";
 import { clearSession, getAccessToken, getSessionRevision, safeReturnPath, setAccessToken } from "./session";
 
 export interface LoginRequest {
@@ -55,7 +56,7 @@ export function getVerifiedSessionUser(token: string): Promise<CurrentUser> {
   return user;
 }
 export function loginDestination(role: UserRole, requested: unknown): string {
-  return role === "candidate" ? safeReturnPath(requested) : "/";
+  return role === "candidate" ? safeReturnPath(requested) : staffReturnPath(requested, role);
 }
 export const authService = {
   async signIn(data: LoginRequest): Promise<CurrentUser> {

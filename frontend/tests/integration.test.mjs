@@ -29,7 +29,106 @@ const workspace = load("services/workspaceService.ts");
 const provenance = load("services/provenanceService.ts");
 const docs = load("utils/documents.ts");
 const dates = load("utils/dateTime.ts");
+const refresh = load("utils/remoteRefresh.ts");
 const json = (body,status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+test("candidate refresh reads every document page before the profile and stops on terminal states", async () => {
+  session.setAccessToken("candidate-refresh-token");
+  const requests = [];
+  let status = "processing";
+  globalThis.fetch = async url => {
+    requests.push(url);
+    if (url.includes("/cv/files")) {
+      const offset = Number(new URL(url, "http://test.invalid").searchParams.get("offset"));
+      return json({ total: 101, items: Array.from({ length: offset ? 1 : 100 }, (_, i) => ({ file_id: offset + i + 1, status: offset ? status : "done" })) });
+    }
+    assert.equal(requests.at(-2), "/api/v1/cv/files?limit=100&offset=100");
+    return json({ profile_id: 7, profile: status === "done" ? { personal_info: { title: "Updated title" } } : null, files: [], open_reviews: 0 });
+  };
+  const active = await workspace.getCandidateOverview();
+  assert.equal(workspace.overviewNeedsRefresh(active), true);
+  assert.equal(active.documents.items.length, 101);
+  status = "done";
+  const completed = await workspace.getCandidateOverview();
+  assert.equal(workspace.overviewNeedsRefresh(completed), false);
+  assert.equal(completed.profile.profile.personal_info.title, "Updated title");
+  for (const terminal of ["failed", "needs_review"]) {
+    status = terminal;
+    assert.equal(workspace.overviewNeedsRefresh(await workspace.getCandidateOverview()), false);
+  }
+  globalThis.fetch = async url => url.includes("/cv/files") ? json({}, 500) : json(null);
+  assert.equal(workspace.overviewNeedsRefresh(await workspace.getCandidateOverview()), false);
+});
+
+async function withRefreshClock(run) {
+  const previousWindow = globalThis.window, previousDocument = globalThis.document, previousNow = Date.now;
+  const timers = new Map(); let now = 0, next = 0;
+  const browser = new EventTarget(), document = new EventTarget();
+  document.visibilityState = "visible";
+  browser.setTimeout = (callback, delay) => { timers.set(++next, { callback, time: now + delay }); return next; };
+  browser.clearTimeout = id => timers.delete(id);
+  globalThis.window = browser; globalThis.document = document; Date.now = () => now;
+  const flush = async () => { for (let n = 0; n < 15; n++) await Promise.resolve(); };
+  async function tick(ms) {
+    const end = now + ms;
+    for (;;) {
+      const due = [...timers].filter(([, task]) => task.time <= end).sort((a, b) => a[1].time - b[1].time)[0];
+      if (!due) break;
+      timers.delete(due[0]); now = due[1].time; due[1].callback(); await flush();
+    }
+    now = end; await flush();
+  }
+  const controllers = [];
+  function start(loader, shouldPoll) {
+    const data = [], errors = [], loading = [];
+    const controller = refresh.startRemoteRefresh({ loader, pollMs: 5000, shouldPoll, onData: value => data.push(value), onError: cause => errors.push(cause), onLoading: value => loading.push(value) });
+    controllers.push(controller);
+    return { ...controller, data, errors, loading };
+  }
+  try { await run({ tick, flush, start, browser, document, timers }); }
+  finally { controllers.forEach(controller => controller.dispose()); globalThis.window = previousWindow; globalThis.document = previousDocument; Date.now = previousNow; }
+}
+
+test("refresh stops on completion, coalesces focus/retry, and never overlaps a pending request", async () => withRefreshClock(async ({ tick, flush, start, browser, document, timers }) => {
+  let resolveRequest, calls = 0;
+  const request = start(() => { calls++; return new Promise(ok => { resolveRequest = ok; }); }, value => value === "processing");
+  await tick(0); request.refresh(); browser.dispatchEvent(new Event("focus")); assert.equal(calls, 1);
+  resolveRequest("processing"); await flush(); await tick(5000); assert.equal(calls, 2);
+  document.dispatchEvent(new Event("visibilitychange")); request.refresh(); assert.equal(calls, 2);
+  resolveRequest("done"); await flush(); assert.deepEqual(request.data, ["processing", "done"]); assert.equal(timers.size, 0);
+  await tick(10000); assert.equal(calls, 2);
+  browser.dispatchEvent(new Event("focus")); document.dispatchEvent(new Event("visibilitychange")); assert.equal(calls, 3);
+  resolveRequest("done"); await flush(); assert.equal(timers.size, 0);
+}));
+
+test("refresh enforces its request/time budget and only explicit refresh restarts polling", async () => withRefreshClock(async ({ tick, start, browser, timers }) => {
+  let calls = 0;
+  const request = start(async () => ++calls);
+  await tick(400000); assert.equal(calls, refresh.MAX_REFRESH_REQUESTS); assert.equal(timers.size, 0);
+  browser.dispatchEvent(new Event("focus")); await tick(0); assert.equal(calls, 61);
+  await tick(10000); assert.equal(calls, 61);
+  request.refresh(); await tick(0); await tick(5000); assert.equal(calls, 63);
+}));
+
+test("refresh pauses while hidden, resumes once, and ignores late responses after disposal", async () => withRefreshClock(async ({ tick, flush, start, browser, document, timers }) => {
+  let calls = 0, resolveRequest;
+  const request = start(() => { calls++; return new Promise(ok => { resolveRequest = ok; }); });
+  await tick(0); resolveRequest("first"); await flush();
+  document.visibilityState = "hidden"; await tick(15000); assert.equal(calls, 1);
+  document.visibilityState = "visible"; document.dispatchEvent(new Event("visibilitychange")); browser.dispatchEvent(new Event("focus")); assert.equal(calls, 2);
+  request.dispose(); resolveRequest("late"); await flush(); assert.deepEqual(request.data, ["first"]); assert.equal(timers.size, 0);
+}));
+
+test("refresh stops after errors and does not refetch permission failures on focus", async () => withRefreshClock(async ({ tick, start, browser }) => {
+  for (const status of [401, 403, 404, 422, 500, 0]) {
+    let calls = 0;
+    const request = start(async () => { calls++; throw new api.ApiError("Safe error", status); });
+    await tick(10000); assert.equal(calls, 1); assert.equal(request.errors.length, 1);
+    browser.dispatchEvent(new Event("focus")); await tick(0);
+    assert.equal(calls, [401, 403, 404, 422].includes(status) ? 1 : 2);
+    request.refresh(); await tick(0); assert.equal(calls, [401, 403, 404, 422].includes(status) ? 2 : 3);
+    request.dispose();
+  }
+}));
 
 test("protected requests use the expected endpoint and bearer token", async () => {
   session.setAccessToken("test-token");
@@ -312,10 +411,10 @@ test("verified staff roles cannot use candidate return destinations", async () =
     globalThis.fetch = async url => json(url.endsWith("/login") ? {access_token:"role-token"} : {...accountFixture, role});
     const user = await auth.authService.signIn(loginFixture);
     assert.equal(user.role, role);
-    assert.equal(auth.loginDestination(role, "/documents?page=2"), role === "candidate" ? "/documents?page=2" : "/");
-    assert.equal(auth.loginDestination(role, "/profile#skills"), role === "candidate" ? "/profile#skills" : "/");
-    assert.equal(auth.loginDestination(role, "https://evil.example"), role === "candidate" ? "/workspace" : "/");
-    assert.equal(auth.loginDestination(role, "/dashboard"), role === "candidate" ? "/workspace" : "/");
+    assert.equal(auth.loginDestination(role, "/documents?page=2"), role === "candidate" ? "/documents?page=2" : role === "reviewer" ? "/reviewer/reviews" : "/admin/reviews");
+    assert.equal(auth.loginDestination(role, "/profile#skills"), role === "candidate" ? "/profile#skills" : role === "reviewer" ? "/reviewer/reviews" : "/admin/reviews");
+    assert.equal(auth.loginDestination(role, "https://evil.example"), role === "candidate" ? "/workspace" : role === "reviewer" ? "/reviewer/reviews" : "/admin/reviews");
+    assert.equal(auth.loginDestination(role, "/dashboard"), role === "candidate" ? "/workspace" : role === "reviewer" ? "/reviewer/reviews" : "/admin/reviews");
   }
 });
 

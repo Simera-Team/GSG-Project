@@ -1,5 +1,7 @@
 import { ApiError } from "./apiClient";
 import { getCandidateFiles, type CandidateFile, type FileStatus } from "./fileService";
+import { getMyProfile } from "./profileService";
+import { friendlyError } from "./apiClient";
 
 export async function getWorkspaceDocuments() {
   const pageSize = 100;
@@ -24,5 +26,21 @@ export async function getWorkspaceDocuments() {
     counts[file.status] += 1;
   }
   // Preserve the backend's newest-first order without guessing timestamp timezones.
-  return { total: first.total, counts, recent: Array.from(unique.values()).slice(0, 5) };
+  return { total: first.total, counts, items: Array.from(unique.values()), recent: Array.from(unique.values()).slice(0, 5) };
+}
+
+export async function getCandidateOverview() {
+  // Read the profile after document statuses, so a completed job is reflected
+  // in the same refresh instead of racing a separate profile polling request.
+  const documents = await Promise.allSettled([getWorkspaceDocuments()]);
+  const profile = await Promise.allSettled([getMyProfile()]);
+  return {
+    documents: documents[0].status === "fulfilled" ? documents[0].value : null,
+    profile: profile[0].status === "fulfilled" ? profile[0].value : null,
+    documentsError: documents[0].status === "rejected" ? friendlyError(documents[0].reason) : "",
+    profileError: profile[0].status === "rejected" ? friendlyError(profile[0].reason) : "",
+  };
+}
+export function overviewNeedsRefresh(data: Awaited<ReturnType<typeof getCandidateOverview>>) {
+  return !data.documentsError && !data.profileError && !!data.documents && (data.documents.counts.uploaded > 0 || data.documents.counts.processing > 0);
 }

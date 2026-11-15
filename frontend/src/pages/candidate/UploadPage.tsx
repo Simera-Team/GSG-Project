@@ -67,7 +67,8 @@ export default function UploadPage() {
     try {
       const response = await uploadCandidateFile(selectionRef.current.file);
       if (!mounted.current) return;
-      clearSelection(); setUploadedId(response.file_id); setWasDuplicate(Boolean(response.duplicate)); setShowUploadSuccess(true); retry();
+      clearSelection(); setUploadedId(response.file_id); setWasDuplicate(Boolean(response.duplicate)); setShowUploadSuccess(true);
+      if (uploadedId === response.file_id) retry();
     } catch (cause) {
       if (mounted.current) setUploadError(friendlyError(cause, "We couldn't upload your document. Please try again."));
     } finally {

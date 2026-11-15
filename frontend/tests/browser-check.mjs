@@ -30,6 +30,7 @@ let mode = "normal";
 let uploadCalls = 0;
 let listCalls = 0;
 let fileCalls = 0;
+let profileCalls = 0;
 let currentStatus = "processing";
 let addedDocument = null;
 let slowList = true;
@@ -50,7 +51,7 @@ socket.addEventListener("message", async event => {
   else if (message.method === "Fetch.requestPaused") {
     const { requestId, request } = message.params;
     const path = new URL(request.url).pathname;
-    if (path.startsWith("/api/v1/review") || /\/profile\/\d+/.test(path)) restrictedCalls.push(path);
+    if (authRole === "candidate" && (path.startsWith("/api/v1/review") || /\/profile\/\d+/.test(path))) restrictedCalls.push(path);
     let status = 200; let body;
     try {
       if (mode === "unauthorized") { status = 401; body = { detail: "SECRET_API_KEY_AND_MODEL_STACK_TRACE" }; }
@@ -63,9 +64,12 @@ socket.addEventListener("message", async event => {
         else if (mode === "identity-network") { await command("Fetch.failRequest",{requestId,errorReason:"InternetDisconnected"}); return; }
         else body = {...user,role:mode === "identity-invalid-role" ? "unknown" : authRole};
       }
+      else if (path.endsWith("/review/items")) body = {total:0,limit:20,offset:0,items:[]};
       else if (path.endsWith("/profile/me")) {
+        profileCalls++;
         if (mode === "empty") {status = 404; body = {};}
         else if (mode === "profile-error") {status = 500; body = { detail: "SECRET_API_KEY_AND_MODEL_STACK_TRACE" };}
+        else if (mode === "processing-refresh") body = currentStatus === "processing" ? { ...profile, profile: null } : { ...profile, profile: { ...profile.profile, personal_info: { ...profile.profile.personal_info, title: "Refreshed processing result" } } };
         else body = profile;
       } else if (path.endsWith("/cv/upload")) {
         uploadCalls++; await new Promise(ok => setTimeout(ok, mode === "new-upload" ? 1200 : 250));
@@ -431,12 +435,29 @@ try {
   await until("location.pathname === '/files/43' && document.querySelector('.fd-document-heading h2')?.textContent.includes('resume.md')","source link opens authorized File Details");
   await click('.ws-nav a[href="/profile"]'); await until("!!document.querySelector('.pr-overview')","return to profile after source details");
   for (const size of [320,390,768,1024,1440]) { await width(size); await noOverflow(`profile width ${size}`); }
-  await screenshot("profile-desktop.png"); await width(390); await screenshot("profile-mobile.png");
+  await screenshot("profile-desktop.png"); await width(768); await noOverflow("profile tablet"); await screenshot("profile-tablet.png"); await width(390); await screenshot("profile-mobile.png");
   await click('.pr-source'); await until("!!document.querySelector('.fd-document')","profile source details");
   await screenshot("details-mobile.png");
   assert.equal((await text()).includes("SECRET"),false);
   await click('.fd-back'); await documentsLoaded();
   await click('.ws-page-heading a[href="/upload"]'); await uploadLoaded();
+
+  mode = "processing-refresh"; currentStatus = "processing"; slowList = false;
+  await navigate("/profile");
+  await until("!!document.querySelector('.pr-welcome')", "pending processing profile");
+  const beforeCompletion = profileCalls;
+  currentStatus = "done";
+  await until("document.querySelector('.pr-title')?.textContent === 'Refreshed processing result'", "profile automatically receives completed processing result", 18000);
+  assert.equal(profileCalls, beforeCompletion + 1, "one profile request per processing refresh");
+  const settledProfileCalls = profileCalls;
+  await new Promise(ok => setTimeout(ok, 5500));
+  assert.equal(profileCalls, settledProfileCalls, "terminal processing stops polling");
+  await click('.ws-nav a[href="/documents"]'); await documentsLoaded();
+  currentStatus = "processing"; await click('.ws-nav a[href="/workspace"]');
+  await until("Number(document.querySelector('.ov-status-counts [data-status=processing] dd')?.textContent) > 0", "workspace processing count");
+  currentStatus = "done";
+  await until("document.querySelector('.ov-status-counts [data-status=processing] dd')?.textContent === '0' && document.querySelector('.ov-profile p')?.textContent.includes('View the experience')", "workspace refreshes documents and profile together", 18000);
+  await click('.ws-nav a[href="/upload"]'); await uploadLoaded();
 
   mode="empty"; await click('.ws-nav a[href="/documents"]');
   await until("document.querySelector('.up-documents .ws-empty')?.textContent.includes('No documents yet')","empty document library");
@@ -483,12 +504,13 @@ try {
   mode="pagination";
   for (const role of ["administrator", "reviewer"]) {
     authRole=role; await navigate('/login'); await signIn();
-    await until("location.pathname === '/' && document.body.innerText.includes('Staff pages are not available')", role + " returns to a truthful account notice");
+    const staffHome = role === "reviewer" ? "/reviewer/reviews" : "/admin/reviews";
+    await until("location.pathname === " + JSON.stringify(staffHome) + " && !!document.querySelector('.rq-panel')", role + " opens its review queue");
     assert.equal(await evaluate("document.querySelectorAll('a[href=\"/workspace\"]').length"),0,"staff has no candidate workspace links");
-    assert.equal(await evaluate("document.querySelector('.home-hero-actions a').getAttribute('href')"),"/login");
+    assert.equal(await evaluate("document.querySelector('.ws-nav a').getAttribute('href')"),staffHome);
     const beforeList=listCalls, beforeFiles=fileCalls;
     await navigate('/documents?page=2');
-    await until("document.body.innerText.includes('This workspace is for candidates')","staff candidate access is blocked");
+    await until("document.body.innerText.includes('This workspace is for another role')","staff candidate access is blocked");
     assert.equal(await evaluate("!!document.querySelector('.ws-nav')"),false);
     assert.equal(listCalls,beforeList); assert.equal(fileCalls,beforeFiles);
     await click('.page-notice-actions button');
@@ -505,7 +527,7 @@ try {
   assert.equal(await evaluate("!!document.querySelector('.ws-nav')"),false);
   assert.equal(listCalls,beforeUnverifiedList,"unverified session makes no document-list requests");
   mode="pagination"; await click('.page-notice-actions button'); await documentsLoaded();
-  await navigate('/dashboard'); await until("location.pathname === '/' && !!document.querySelector('.home-page')","legacy dashboard redirects home");
+  await navigate('/dashboard'); await until("location.pathname === '/workspace' && !!document.querySelector('.ov-grid')","legacy dashboard follows verified role");
   await navigate('/unknown/nested/path'); await until("document.body.innerText.includes('404') && document.body.innerText.includes('find that page')","unknown URL has branded not found page");
   for (const size of [320,390,768,1440]) { await width(size); await noOverflow('not found width '+size); }
   await click('.page-notice-actions a'); await until("location.pathname === '/'","not found home link");

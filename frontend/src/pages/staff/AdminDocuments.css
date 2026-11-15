@@ -1,0 +1,12 @@
+.ad-document-link { max-width: 100%; }
+.ad-filename { overflow-wrap: anywhere; min-width: 0; }
+.ad-list-metadata { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(160px, 2fr) repeat(2, minmax(80px, 1fr)); gap: 16px; margin: 18px 0; }
+.ad-list-metadata > div { min-width: 0; }
+.ad-safe-error { background: #faf3e8; border-left: 3px solid #d4b05d; border-radius: 0 7px 7px 0; padding: 13px 15px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.ad-attempt-list { list-style: none; padding: 0; margin: 20px 0 0; }
+.ad-attempt { border-top: 1px solid var(--ws-border); padding: 23px 0 6px; }
+.ad-attempt h3 { font-size: 16px; margin: 0; }
+.ad-rerun h2 { font-size: 18px; }
+.ad-rerun > .ws-notice:not(.ws-notice-error) { background: #f0f4ed; border: 1px solid #d7e3d3; }
+@media (max-width: 780px) { .ad-list-metadata { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 480px) { .ad-rerun-result { display: block; } }

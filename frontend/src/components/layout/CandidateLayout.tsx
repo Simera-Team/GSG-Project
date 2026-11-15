@@ -1,13 +1,15 @@
 import { useEffect } from "react";
-import { Link, Navigate, NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { Files, LayoutDashboard, LogOut, ShieldCheck, UploadCloud, UserRound } from "lucide-react";
 import BrandLogo from "../common/BrandLogo";
-import { clearSession, getSessionNotice } from "../../services/session";
-import { useSessionUser } from "../../hooks/useSessionUser";
-import PageNotice from "../common/PageNotice";
+import { clearSession } from "../../services/session";
+import RoleGate from "./RoleGate";
 import "./CandidateLayout.css";
 export default function CandidateLayout() {
-  const { token, user, loading, error, retry } = useSessionUser();
+  return <RoleGate role="candidate"><CandidateWorkspace /></RoleGate>;
+}
+
+function CandidateWorkspace() {
   const location = useLocation();
   useEffect(() => {
     if (!location.hash) { window.scrollTo(0, 0); return; }
@@ -23,10 +25,6 @@ export default function CandidateLayout() {
     if (!scrollToSection()) observer.observe(document.body, { childList: true, subtree: true });
     return () => observer.disconnect();
   }, [location.pathname, location.hash]);
-  if (!token) return <Navigate to="/login" replace state={{ from: location.pathname + location.search + location.hash, message: getSessionNotice() }} />;
-  if (loading) return <PageNotice label="Your account" title="Checking your account"><p role="status">Please wait while we verify your session.</p></PageNotice>;
-  if (error || !user) return <PageNotice label="Your account" title="We couldn't verify your account"><p role="alert">{error || "Please try again to continue."}</p><div className="page-notice-actions"><button onClick={retry}>Try again</button><button onClick={() => clearSession()}>Sign in again</button></div></PageNotice>;
-  if (user.role !== "candidate") return <PageNotice label="Account access" title="This workspace is for candidates"><p>You are signed in as {user.role === "administrator" ? "an administrator" : "a reviewer"}. Staff pages are not available in this frontend.</p><div className="page-notice-actions"><Link to="/">Go to Home</Link><button onClick={() => clearSession()}>Sign in with another account</button></div></PageNotice>;
   const title = location.pathname === "/workspace" ? "Overview" : location.pathname.startsWith("/files/") ? "File Details" : location.pathname === "/profile" ? "My Profile" : location.pathname === "/documents" ? "My Documents" : "Upload Documents";
   return <div className="ws-app">
     <a className="ws-skip" href="#candidate-main">Skip to content</a>

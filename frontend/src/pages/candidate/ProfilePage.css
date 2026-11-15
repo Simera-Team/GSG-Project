@@ -1,4 +1,5 @@
 .pr-overview { margin-bottom: 22px; overflow: hidden; }
+.pr-refresh { flex-wrap: wrap; margin-bottom: 20px; }
 .pr-overview-main { padding: 30px; display: flex; align-items: flex-start; gap: 21px; position: relative; border-top: 3px solid #d8bd75; }
 .pr-avatar { width: 76px; height: 76px; flex-shrink: 0; display: grid; place-items: center; background: #e7efe4; border: 1px solid #d9e4d4; border-radius: 17px; color: #2b6d5b; font-family: "Playfair Display",Georgia,serif; font-size: 28px; }
 .pr-identity { flex: 1; min-width: 0; }

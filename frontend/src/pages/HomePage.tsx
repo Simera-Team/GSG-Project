@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { ArrowDown, ArrowRight, BriefcaseBusiness, ChartNoAxesColumnIncreasing, Check, FileText, ListChecks, Menu, UploadCloud, UserRound, X } from "lucide-react";
 import BrandLogo from "../components/common/BrandLogo";
 import { clearSession } from "../services/session";
+import { loginDestination } from "../services/authService";
 import { useSessionUser } from "../hooks/useSessionUser";
 import "./HomePage.css";
 
@@ -23,8 +24,8 @@ export default function HomePage() {
   const staff = Boolean(user && !candidate);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
-  const destination = candidate ? "/workspace" : token ? "/login" : "/register";
-  const heroActionLabel = candidate ? "Go to Workspace" : token ? "Use a candidate account" : "Get Started";
+  const destination = user ? loginDestination(user.role, undefined) : token ? "/login" : "/register";
+  const heroActionLabel = user ? "Go to Workspace" : token ? "Sign in again" : "Get Started";
 
   return <div className="home-page">
     <a className="home-skip" href="#home-main">Skip to content</a>
@@ -46,7 +47,7 @@ export default function HomePage() {
             {candidate ? (
               <Link className="home-button home-button-primary home-nav-cta" to="/workspace" onClick={() => setMenuOpen(false)}>My Workspace<ArrowRight size={15} /></Link>
             ) : staff ? (
-              <button type="button" className="home-sign-in home-account-action" onClick={() => clearSession()}>Sign Out</button>
+              <><Link className="home-sign-in" to={destination} onClick={() => setMenuOpen(false)}>Review Queue</Link><button type="button" className="home-sign-in home-account-action" onClick={() => clearSession()}>Sign Out</button></>
             ) : (
               <Link className="home-sign-in" to="/login" onClick={() => setMenuOpen(false)}>Sign In</Link>
             )}
@@ -60,7 +61,7 @@ export default function HomePage() {
         <div className="home-hero-copy">
           <h1 id="hero-heading">Your experience.<br /><em>One clear profile.</em></h1>
           <p>Upload professional documents, track their processing, and access a unified profile built from your available sources.</p>
-          {staff && <p className="home-account-notice" role="status">You are signed in as {user?.role === "administrator" ? "an administrator" : "a reviewer"}. Staff pages are not available in this frontend.</p>}
+          {staff && <p className="home-account-notice" role="status">You are signed in as {user?.role === "administrator" ? "an administrator" : "a reviewer"}. Your manual review queue is available in your workspace.</p>}
           {error && token && <p className="home-account-notice" role="alert">{error} <button type="button" className="home-account-action" onClick={retry}>Try again</button></p>}
           <div className="home-hero-actions">
             {loading ? <button type="button" className="home-button home-button-primary" disabled role="status">Checking your account...</button> : <Link to={destination} className="home-button home-button-primary">{heroActionLabel}<ArrowRight size={17} /></Link>}
@@ -119,7 +120,7 @@ export default function HomePage() {
 
     <footer className="home-container home-footer">
       <BrandLogo />
-      <nav aria-label="Footer navigation"><a href="#how-it-works">How It Works</a><a href="#features">Features</a><a href="#about">About</a><Link to={destination}>{candidate ? "My Workspace" : token ? "Use a candidate account" : "Get Started"}</Link>{!token && <Link to="/login">Sign In</Link>}</nav>
+      <nav aria-label="Footer navigation"><a href="#how-it-works">How It Works</a><a href="#features">Features</a><a href="#about">About</a><Link to={destination}>{user ? "My Workspace" : token ? "Sign in again" : "Get Started"}</Link>{!token && <Link to="/login">Sign In</Link>}</nav>
       <span className="home-copyright">© {new Date().getFullYear()} CVerge</span>
     </footer>
   </div>;

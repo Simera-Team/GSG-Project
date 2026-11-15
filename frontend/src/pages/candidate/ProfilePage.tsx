@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Award, BriefcaseBusiness, CheckCircle2, ExternalLink, FileText, FolderGit2, GraduationCap, Languages, Link2, Mail, MapPin, Phone, Plus, RefreshCw, ShieldCheck, Sparkles, UserRound } from "lucide-react";
-import { getMyProfile, type ProfileDate } from "../../services/profileService";
-import { getCurrentUser } from "../../services/authService";
-import { getCandidateFiles } from "../../services/fileService";
+import { type ProfileDate } from "../../services/profileService";
+import { getVerifiedSessionUser } from "../../services/authService";
+import { getAccessToken } from "../../services/session";
+import { getCandidateOverview, overviewNeedsRefresh } from "../../services/workspaceService";
 import { friendlyError } from "../../services/apiClient";
 import { useRemoteData } from "../../hooks/useRemoteData";
 import { formatTimestamp } from "../../utils/dateTime";
@@ -25,18 +26,15 @@ function WebLink({ url, children }: { url?: string | null; children: ReactNode }
   return safe ? <a className="ws-text-action" href={safe} target="_blank" rel="noopener noreferrer">{children}<ExternalLink size={13} /></a> : null;
 }
 async function loadProfile() {
-  const [account, profile, documents] = await Promise.allSettled([getCurrentUser(), getMyProfile(), getCandidateFiles(50, 0)]);
+  const [account, overview] = await Promise.all([getVerifiedSessionUser(getAccessToken() || "").then(user => ({ user, error: "" }), cause => ({ user: null, error: friendlyError(cause) })), getCandidateOverview()]);
   return {
-    user: account.status === "fulfilled" ? account.value : null,
-    data: profile.status === "fulfilled" ? profile.value : null,
-    files: documents.status === "fulfilled" ? documents.value : null,
-    accountError: account.status === "rejected" ? friendlyError(account.reason, "We couldn't load your account information.") : "",
-    profileError: profile.status === "rejected" ? friendlyError(profile.reason, "We couldn't load your profile. Please try again.") : "",
-    filesError: documents.status === "rejected" ? friendlyError(documents.reason, "We couldn't load connected documents.") : "",
+    ...overview, user: account.user, data: overview.profile, files: overview.documents,
+    accountError: account.error, profileError: overview.profileError, filesError: overview.documentsError,
   };
 }
+function profileNeedsRefresh(result: Awaited<ReturnType<typeof loadProfile>>) { return !result.accountError && overviewNeedsRefresh(result); }
 export default function ProfilePage() {
-  const { data: result, loading, error, retry } = useRemoteData(loadProfile);
+  const { data: result, loading, error, retry } = useRemoteData(loadProfile, 5000, profileNeedsRefresh);
   const data = result?.data;
   const profile = data?.profile;
   const personal = profile?.personal_info;
@@ -51,15 +49,17 @@ export default function ProfilePage() {
   const projects = profile?.projects || [];
   const languages = profile?.languages || [];
   const links = profile?.links || [];
-  const files = data?.files || result?.files?.items || [];
-  const sourceCount = result?.files?.total ?? data?.files.length;
+  const files = result?.files?.items || data?.files || [];
+  const sourceCount = result?.files?.total;
   const hasDetails = Boolean(profile && (personal?.summary || personal?.title || location || experience.length || education.length || skills.length || certifications.length || projects.length || languages.length || links.length));
   return <>
     <div className="ws-page-heading"><div><span className="ws-eyebrow">YOUR PROFESSIONAL STORY</span><h1>My Profile</h1><p>Your experience and skills, brought together from your documents.</p></div><Link to="/upload" className="ws-button ws-button-primary"><Plus size={17} />Add a document</Link></div>
+    <div className="ws-section-heading pr-refresh"><p className="ws-caption">Active processing refreshes every 5 seconds while visible, for up to 5 minutes. Return to this tab or refresh to check for later changes.</p><button className="ws-button ws-button-secondary" disabled={loading} onClick={retry}><RefreshCw size={15} />Refresh profile</button></div>
     {loading ? <div className="pr-loading" role="status"><div className="ws-panel"><div className="ws-skeleton pr-skeleton-hero" /><div className="ws-skeleton" /></div><div className="pr-loading-grid">{[1,2,3,4].map(i => <div className="ws-panel" key={i}><div className="ws-skeleton" /><div className="ws-skeleton" /></div>)}</div><span className="ws-sr-only">Loading your profile…</span></div> : <>
       {(error || result?.profileError || result?.accountError) && <div className="ws-notice ws-notice-error" role="alert"><span>{error || result?.profileError || result?.accountError} Your available information is shown below.</span><button className="ws-text-action" onClick={retry}><RefreshCw size={15} />Try again</button></div>}
+      {result?.filesError && <div className="ws-notice ws-notice-error" role="alert"><span>{result.filesError} The full document count is unavailable. {files.length > 0 && "Only profile-linked documents are shown below."}</span><button className="ws-text-action" onClick={retry}>Try again</button></div>}
       <section className="ws-panel pr-overview" aria-label="Profile overview"><div className="pr-overview-main"><div className="pr-avatar" aria-hidden="true">{initials}</div><div className="pr-identity"><span className="ws-eyebrow">PROFILE OVERVIEW</span><h2>{name}</h2>{personal?.title ? <p className="pr-title">{personal.title}</p> : <p className="ws-muted">Your professional title will appear as your documents are processed.</p>}<div className="pr-contact">{email && <span><Mail size={14} />{email}</span>}{location && <span><MapPin size={14} />{location}</span>}</div></div>{profile && <span className="pr-source-badge"><ShieldCheck size={15} />Built from your sources</span>}</div><div className="pr-overview-footer"><div className="pr-metrics"><span><strong>{sourceCount ?? "—"}</strong> {sourceCount === 1 ? "document" : "documents"}</span><span><strong>{experience.length}</strong> {experience.length === 1 ? "experience" : "experiences"}</span><span><strong>{skills.length}</strong> {skills.length === 1 ? "skill" : "skills"}</span></div><span className="ws-caption">{data?.updated_at ? `Updated ${formatTimestamp(data.updated_at)}` : "Your profile grows as documents are processed."}</span></div></section>
-      {!hasDetails && !result?.profileError && <div className="pr-welcome"><span className="ws-icon-tile"><Sparkles size={22} /></span><div><h3>Your profile is ready to grow</h3><p>{files.length ? "Your documents are connected. Profile information will appear once processing and any required review are complete." : "Start with a resume or LinkedIn export. Your account is ready, even before your first upload."}</p></div><Link to="/upload" className="ws-text-action">Upload Documents <ArrowRight size={16} /></Link></div>}
+      {!hasDetails && !result?.profileError && !result?.filesError && <div className="pr-welcome"><span className="ws-icon-tile"><Sparkles size={22} /></span><div><h3>Your profile is ready to grow</h3><p>{files.length ? "Your documents are connected. Profile information will appear once processing and any required review are complete." : "Start with a resume or LinkedIn export. Your account is ready, even before your first upload."}</p></div><Link to="/upload" className="ws-text-action">Upload Documents <ArrowRight size={16} /></Link></div>}
       <nav className="pr-section-nav" aria-label="Profile sections"><a href="#summary">Overview</a><a href="#experience">Experience</a><a href="#education">Education</a><a href="#skills">Skills</a><a href="#sources">Documents</a></nav>
       <div className="pr-grid"><div className="pr-main-column">
         <Section id="summary" title="Professional summary" icon={<UserRound size={19} />}>{personal?.summary ? <p className="pr-summary">{personal.summary}</p> : <Empty>Your professional summary will appear here after it’s extracted from your documents.</Empty>}</Section>

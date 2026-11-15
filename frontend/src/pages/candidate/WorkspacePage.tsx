@@ -1,8 +1,7 @@
 import { Link } from "react-router-dom";
 import { ArrowRight, FileText, Files, Plus, RefreshCw, ShieldCheck } from "lucide-react";
 import { getCurrentUser } from "../../services/authService";
-import { getMyProfile } from "../../services/profileService";
-import { getWorkspaceDocuments } from "../../services/workspaceService";
+import { getCandidateOverview, overviewNeedsRefresh } from "../../services/workspaceService";
 import { useRemoteData } from "../../hooks/useRemoteData";
 import { statusLabels, fileType } from "../../utils/documents";
 import { formatTimestamp } from "../../utils/dateTime";
@@ -14,8 +13,9 @@ const statuses: FileStatus[] = ["uploaded", "processing", "done", "needs_review"
 
 export default function WorkspacePage() {
   const account = useRemoteData(getCurrentUser);
-  const documents = useRemoteData(getWorkspaceDocuments, 5000);
-  const profile = useRemoteData(getMyProfile, 5000);
+  const overview = useRemoteData(getCandidateOverview, 5000, overviewNeedsRefresh);
+  const documents = { ...overview, data: overview.data?.documents, error: overview.error || overview.data?.documentsError };
+  const profile = { ...overview, data: overview.data?.profile, error: overview.error || overview.data?.profileError };
   const name = account.data?.name?.trim() || profile.data?.candidate_name?.trim();
   const summary = documents.data;
   const isNew = summary?.total === 0;
@@ -57,7 +57,7 @@ export default function WorkspacePage() {
               <DocumentStatus status={file.status} /><ArrowRight size={14} aria-hidden="true" />
             </Link>)}</div>
           </section>
-          <p className="ws-caption ov-poll-note">Processing statuses refresh every 5 seconds while this page is visible.</p>
+          <p className="ws-caption ov-poll-note">Active processing refreshes every 5 seconds while visible, for up to 5 minutes. Return to this tab or use Refresh to check again.</p>
         </> : <p className="ws-muted">Your document summary is unavailable. You can still <Link to="/documents">open My Documents</Link> or upload a document.</p>}
       </section>
 

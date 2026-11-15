@@ -1,17 +1,20 @@
 
 import { useRef, useState, type FormEvent } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { Eye, EyeOff, ArrowRight } from "lucide-react";
 import BrandLogo from "../../components/common/BrandLogo";
+import PageNotice from "../../components/common/PageNotice";
+import { useSessionUser } from "../../hooks/useSessionUser";
 import { authService, loginDestination } from "../../services/authService";
-import { safeReturnPath } from "../../services/session";
+import { safeLoginReturnPath } from "../../services/roleAccess";
 import { friendlyError } from "../../services/apiClient";
 import "./Auth.css";
 
 export default function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const returnTo = safeReturnPath(location.state?.from);
+  const session = useSessionUser();
+  const returnTo = safeLoginReturnPath(location.state?.from);
   const sessionMessage = location.state?.message === "Your session has expired. Please sign in again." ? location.state.message : "";
 
   const [email, setEmail] = useState("");
@@ -47,6 +50,9 @@ export default function LoginPage() {
     }
   };
 
+  if (session.token && session.loading && !isLoading) return <PageNotice label="Your account" title="Checking your account"><p role="status">Please wait while we verify your session.</p></PageNotice>;
+  if (session.user && !isLoading) return <Navigate to={loginDestination(session.user.role, returnTo)} replace />;
+
   return (
     <div className="auth-page">
       <div className="auth-left">
@@ -58,7 +64,7 @@ export default function LoginPage() {
           <h1>Sign in to CVerge</h1>
 
           <p className="auth-description">
-            Access your candidate profiles and continue where you left off.
+            Sign in to continue to your workspace.
           </p>
 
           {location.state?.registered === true && !success && <p className="auth-success" role="status">Account created. Sign in to continue to your workspace.</p>}

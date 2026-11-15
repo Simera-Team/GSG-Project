@@ -34,7 +34,7 @@ function DocumentList({ page, onPageChange }: {
       <div className="ws-section-heading">
         <div>
           <h2 id="documents-heading">Document library <span className="ws-count">{data?.total ?? "—"}</span></h2>
-          <p>Status refreshes every 5 seconds while this page is visible.</p>
+          <p>Status refreshes every 5 seconds while visible, for up to 5 minutes. Refresh or return to this tab to check again.</p>
         </div>
         <button type="button" className="ws-button ws-button-quiet" disabled={loading} onClick={retry}>
           <RefreshCw size={15} />Refresh
