@@ -1,0 +1,11 @@
+.page-notice { min-height: 100dvh; background: #faf9f6; color: #103b48; font: 15px/1.8 "DM Sans", system-ui, sans-serif; padding: 28px clamp(20px, 6vw, 80px); }
+.page-notice .auth-brand { display: inline-flex; align-items: center; gap: 10px; color: #103b48; font: 700 27px/1.2 "Playfair Display", Georgia, serif; text-decoration: none; }
+.page-notice .auth-brand svg { width: 36px; height: 36px; }
+.page-notice main { max-width: 540px; margin: clamp(60px, 12vh, 140px) auto; overflow-wrap: anywhere; }
+.page-notice-label { color: #856324; font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.page-notice h1 { font: 500 clamp(30px, 6vw, 44px)/1.25 "Playfair Display", Georgia, serif; margin: 16px 0; }
+.page-notice p { color: #596f70; margin: 0 0 24px; }
+.page-notice-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.page-notice-actions :is(a,button) { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; border: 1px solid #103b48; border-radius: 7px; padding: 9px 18px; background: #103b48; color: #fffefa; font: inherit; text-decoration: none; cursor: pointer; }
+.page-notice-actions :is(a,button) + :is(a,button) { background: transparent; color: #103b48; }
+.page-notice :is(a,button):focus-visible { outline: 3px solid #b18124; outline-offset: 4px; }

@@ -1,0 +1,19 @@
+.sm-scope { background: #f0f4ed; border: 1px solid #d7e3d3; }
+.sm-panel { max-width: 980px; }
+.sm-form > fieldset { min-width: 0; border: 0; padding: 0; margin: 24px 0 0; }
+.sm-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.sm-fields > div { min-width: 0; }
+.sm-fields label { display: block; font-size: 12px; font-weight: 650; margin-bottom: 9px; }
+.sm-fields :is(input, select) { width: 100%; min-width: 0; min-height: 44px; padding: 11px 12px; border: 1px solid #cdd9cf; border-radius: 7px; color: var(--ws-ink); background: #fffefa; }
+.sm-fields input[aria-invalid=true], .sm-fields select[aria-invalid=true] { border-color: #ad4d3d; }
+.sm-password { display: flex; align-items: center; position: relative; }
+.sm-password input { padding-right: 46px; }
+.sm-password button { position: absolute; right: 6px; display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: 5px; background: transparent; color: var(--ws-muted); cursor: pointer; }
+.sm-password button:hover { background: #eef3e9; }
+.sm-field-error { color: #933e32; font-size: 12px; line-height: 1.6; margin: 8px 0 0; }
+.sm-success { border-color: #bbd7bf; background: #f7fbf4; }
+.sm-success:focus { outline: 3px solid #bd8b26; outline-offset: 3px; }
+.sm-success dd { overflow-wrap: anywhere; }
+.sm-retry { margin-bottom: 24px; }
+@media (max-width: 700px) { .sm-fields { grid-template-columns: 1fr; gap: 20px; } }
+
