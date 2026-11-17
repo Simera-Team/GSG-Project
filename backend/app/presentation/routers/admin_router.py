@@ -5,18 +5,37 @@ Each action needs its permission from app/domain/permissions.py (FR-003, §2.10)
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Path,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 
+from app.application.dto.RequestDto.upload_file_dto import UploadFileDTO
 from app.application.interfaces.read_repository import IReadRepository
 from app.application.interfaces.message_publisher import IMessagePublisher
+from app.application.services.file_service import FileService
 from app.core.dependencies import (
+    get_file_service,
     get_message_publisher,
     get_settings_repository,
     get_read_repository,
     get_user_repository,
     require_permission,
 )
-from app.core.exceptions import EmailAlreadyExistsError
+from app.core.exceptions import (
+    EmailAlreadyExistsError,
+    EmptyFileError,
+    FileTooLargeError,
+    InvalidFileContentError,
+    InvalidFileTypeError,
+)
 from app.core.security import hash_password
 from app.domain.entities.user import User
 from app.domain.enums.user_role import UserRole
@@ -28,6 +47,7 @@ from app.presentation.schemas.file_schema import (
     AdminFileOut,
     AttemptOut,
     RerunOut,
+    UploadCVResponse,
 )
 from app.presentation.schemas.profile_schema import StaffUserIn, StaffUserOut
 from app.presentation.schemas.settings_schema import (
@@ -51,6 +71,7 @@ JobViewer = _needs(Permission.CANDIDATE_DATA_ACCESS_ANY)
 JobRerunner = _needs(Permission.JOB_RERUN)
 UserManager = _needs(Permission.USER_MANAGE)
 SettingsManager = _needs(Permission.SETTINGS_MANAGE)
+VettingUploader = _needs(Permission.VETTING_UPLOAD)
 Reader = Annotated[IReadRepository, Depends(get_read_repository)]
 FileId = Annotated[int, Path(ge=1)]
 ERRORS = {401: {"description": "Not logged in"},
@@ -132,6 +153,52 @@ def create_staff_user(body: StaffUserIn, admin: UserManager,
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     role = user.role.value if isinstance(user.role, UserRole) else str(user.role)
     return StaffUserOut(user_id=user.user_id, name=user.name, email=user.email, role=role)
+
+
+@router.post("/candidates/{user_id}/vetting", response_model=UploadCVResponse,
+             status_code=status.HTTP_202_ACCEPTED,
+             responses={**ERRORS,
+                        200: {"description": "This vetting file was already uploaded"},
+                        400: {"description": "Not a valid JSON vetting result"},
+                        404: {"description": "No such candidate"},
+                        413: {"description": "Larger than 10 MB"}},
+             summary="Upload a vetting result for a candidate")
+async def upload_vetting(
+    user_id: Annotated[int, Path(ge=1)],
+    file: Annotated[UploadFile, File(description="Vetting result (.json), max 10 MB")],
+    admin: VettingUploader,
+    users: Annotated[IUserRepository, Depends(get_user_repository)],
+    file_service: Annotated[FileService, Depends(get_file_service)],
+    response: Response,
+):
+    """Vetting results are trusted above anything a candidate claims (FR-032),
+    so only staff can add them (FR-007)."""
+    candidate = users.get_by_id(user_id)
+    if candidate is None or UserRole(candidate.role) != UserRole.CANDIDATE:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Candidate not found")
+
+    try:
+        content = await file.read(FileService.MAX_FILE_SIZE + 1)
+        result = await file_service.upload_cv(
+            file=UploadFileDTO(filename=file.filename or "", content=content),
+            user_id=user_id,
+            source_kind="vetting",
+        )
+    except FileTooLargeError as exc:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, str(exc)) from exc
+    except (InvalidFileTypeError, EmptyFileError, InvalidFileContentError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    finally:
+        await file.close()
+
+    if getattr(result, "duplicate", False):
+        response.status_code = status.HTTP_200_OK
+        return UploadCVResponse(file_id=result.file_id, filename=result.filename,
+                                size=result.size, status="duplicate", duplicate=True,
+                                message="This vetting file was already uploaded")
+    return UploadCVResponse(file_id=result.file_id, filename=result.filename,
+                            size=result.size, status="uploaded",
+                            message="Vetting result uploaded and queued for processing")
 
 
 Settings = Annotated[SqlSettingsRepository, Depends(get_settings_repository)]
