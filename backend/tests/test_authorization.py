@@ -1,5 +1,6 @@
 """Authentication, role guard and ownership checks over HTTP (NFR-016)."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Annotated
@@ -12,6 +13,8 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from app.application.authorization import ensure_can_access
+from app.application.dto.RequestDto.upload_file_dto import UploadFileDTO
+from app.application.services.file_service import FileService
 from app.core.config import settings
 from app.core.dependencies import (
     CurrentUser,
@@ -20,6 +23,7 @@ from app.core.dependencies import (
     get_user_repository,
     require_permission,
 )
+from app.core.exceptions import InvalidFileTypeError
 from app.domain.entities.user import User
 from app.domain.enums.user_role import UserRole
 from app.domain.permissions import Permission
@@ -156,9 +160,11 @@ class FakeFileService:
 
     def __init__(self) -> None:
         self.uploaded_for: list[int] = []
+        self.kinds: list[str | None] = []
 
-    async def upload_cv(self, file, user_id: int) -> SimpleNamespace:
+    async def upload_cv(self, file, user_id: int, source_kind=None) -> SimpleNamespace:
         self.uploaded_for.append(user_id)
+        self.kinds.append(source_kind)
         return SimpleNamespace(
             file_id=1,
             filename=file.filename,
@@ -196,6 +202,64 @@ def test_only_candidates_can_upload_cv(client, file_service, make_user, role):
     response = _upload(client, auth_header(make_user(role)))
     assert response.status_code == 403
     assert file_service.uploaded_for == []
+
+
+VETTING_JSON = b'{"skills": [{"name": "Python", "level": 5}]}'
+
+
+def _upload_vetting(client, user_id, headers=None):
+    return client.post(
+        f"/api/v1/admin/candidates/{user_id}/vetting",
+        files={"file": ("vetting.json", VETTING_JSON, "application/json")},
+        headers=headers or {},
+    )
+
+
+def test_candidate_upload_never_sets_a_source_kind(client, file_service, make_user):
+    candidate = make_user(UserRole.CANDIDATE)
+    _upload(client, auth_header(candidate))
+    assert file_service.kinds == [None]
+
+
+def test_admin_can_upload_vetting_for_a_candidate(client, file_service, make_user):
+    candidate = make_user(UserRole.CANDIDATE)
+    admin = make_user(UserRole.ADMINISTRATOR)
+    response = _upload_vetting(client, candidate.user_id, auth_header(admin))
+    assert response.status_code == 202
+    assert file_service.uploaded_for == [candidate.user_id]
+    assert file_service.kinds == ["vetting"]
+
+
+@pytest.mark.parametrize("role", [UserRole.CANDIDATE, UserRole.REVIEWER])
+def test_only_admins_can_upload_vetting(client, file_service, make_user, role):
+    candidate = make_user(UserRole.CANDIDATE)
+    caller = candidate if role == UserRole.CANDIDATE else make_user(role)
+    response = _upload_vetting(client, candidate.user_id, auth_header(caller))
+    assert response.status_code == 403
+    assert file_service.uploaded_for == []
+
+
+@pytest.mark.parametrize("target", [UserRole.REVIEWER, None])
+def test_vetting_needs_an_existing_candidate(client, file_service, make_user, target):
+    admin = make_user(UserRole.ADMINISTRATOR)
+    user_id = make_user(target).user_id if target else 999
+    response = _upload_vetting(client, user_id, auth_header(admin))
+    assert response.status_code == 404
+    assert file_service.uploaded_for == []
+
+
+def test_candidate_json_upload_is_refused():
+    service = FileService(None, None, None, None, None)
+    dto = UploadFileDTO(filename="vetting.json", content=VETTING_JSON)
+    with pytest.raises(InvalidFileTypeError):
+        asyncio.run(service.upload_cv(dto, user_id=1))
+
+
+def test_vetting_must_be_a_json_file():
+    service = FileService(None, None, None, None, None)
+    dto = UploadFileDTO(filename="skills.md", content=b"# Skills")
+    with pytest.raises(InvalidFileTypeError):
+        asyncio.run(service.upload_cv(dto, user_id=1, source_kind="vetting"))
 
 
 def test_upload_requires_login(client, file_service):

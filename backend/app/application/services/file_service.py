@@ -177,7 +177,6 @@ class FileService:
         "docx": "cv",
         "doc": "cv",
         "md": "linkedin",
-        "json": "vetting",
     }
 
     async def upload_cv(
@@ -191,12 +190,15 @@ class FileService:
         validated_file = self.validate_file(file)
 
         extension = validated_file.extension.lstrip(".")
-        source_kind = source_kind or self.KIND_BY_EXTENSION.get(extension)
         if source_kind is None:
-            # FR-008 / FR-053: a source without a kind is rejected rather than
-            # stored with a guessed one.
+            source_kind = self.KIND_BY_EXTENSION.get(extension)
+            if source_kind is None:
+                raise InvalidFileTypeError(
+                    "Only PDF, DOCX and MD files are allowed"
+                )
+        elif source_kind == "vetting" and extension != "json":
             raise InvalidFileTypeError(
-                f"No source kind is defined for '.{extension}' files"
+                "Vetting results must be JSON files"
             )
 
         # Step 2: Get or create user profile
