@@ -211,6 +211,11 @@ Every value is value + confidence + evidence + page. The entities are
 `PersonalInfo`, `WorkExperience`, `Education`, `Skill`, `Certification`,
 `Project`, `Language`, `Link`.
 
+`PersonalInfo.emails` and `PersonalInfo.phones` are **lists** of that shape,
+one entry per address or number the document states, because people have more
+than one of each and the merge treats them as a union rather than a conflict
+(`M-03`). Each entry is normalised, evidence-checked and scored on its own.
+
 Four requirements are satisfied by the shape itself rather than by code:
 FR-025 (no protected trait has a field to land in), FR-026 (`value` is
 nullable), FR-027 (confidence is required), FR-065 (evidence and page are
@@ -519,12 +524,24 @@ settle this". The reasoning is in the file; the shape of it:
 - a field with **no row** gets the safe default — recency, then priority,
   then a reviewer. It never silently picks a value no rule supports.
 
-### `app/application/services/profile_builder.py` (368 lines)
+### `app/application/services/profile_builder.py` (436 lines)
 
 Builds the live profile from accepted field records (FR-036, FR-063).
 
 - Calls `resolve_field` per personal field and uses the winner, recording
   the deciding rule on the record.
+- **Email and phone are not single values (`M-03`).** People have more than
+  one, so two different addresses across sources are not a disagreement and
+  must never become a question to the candidate. They are unioned across
+  every source and de-duplicated on the *normalised* value, so
+  `Ahmad.K@Example.com` and `ahmad.k@example.com` are one address, and
+  `0790001234` and `+962 7 9000 1234` are one number. The profile keeps both
+  a `primary_email` / `primary_phone` — from the newest source
+  (`uploaded_at`, then source id; within one source, the first one listed) —
+  and the full `emails` / `phones` list, with every `field_id` that fed each
+  value (FR-063). They are therefore **out** of `PERSONAL_FIELDS` and out of
+  the candidate-fallback rows of `FIELD_POLICIES`; city and country keep
+  theirs (`C-05`). Agreement between sources still earns the `M-04` boost.
 - Groups work experience, education, certifications and projects with
   `match_entities` (`M-01`) and then runs the **same** ladder on every field
   of each group, so the `C-` rules apply inside an entity and not only to
@@ -540,7 +557,7 @@ Builds the live profile from accepted field records (FR-036, FR-063).
 - The result must validate as `ProfileDocument`; if it does not, no profile
   is produced and the job goes to review (FR-038).
 
-### `app/application/dto/profile_document.py` (129 lines)
+### `app/application/dto/profile_document.py` (137 lines)
 
 The Simera profile format, as Pydantic. The validation gate for FR-038, and
 what gets stored as the generated profile JSON.
@@ -586,15 +603,34 @@ record, so a vetting source is as traceable as any other (FR-058).
 
 ## Orchestration
 
-### `app/application/services/cv_processing_service.py` (189 lines) — the LLM loop
+### `app/application/services/cv_processing_service.py` (262 lines) — the LLM loop
 
 Owns the retry policy (FR-023) and the attempt log (FR-058).
 
 - No readable text → no LLM call at all; the job goes to review with the
   reason (FR-020).
-- Up to `max_attempts` (3) tries with doubling waits: 2 s, then 4 s. A
-  non-retryable provider error breaks out immediately instead of wasting
-  the remaining attempts.
+- **The retry depends on what failed**, because the two failures need
+  opposite treatment. A run never exceeds `max_attempts` (3) tries whatever
+  the mix:
+
+| What failed | Attempts | Wait | What changes on the retry |
+|---|---|---|---|
+| Retryable provider error (timeout, 429, 5xx) | up to 3 | 2 s, then 4 s (or the provider's `Retry-After`, whichever is longer) | nothing — the request was fine, the service was not |
+| Non-retryable provider error (401, bad key) | 1 | — | nothing can help; it breaks out at once |
+| Answer fails schema validation | **2 in total** | **none** | the prompt carries the previous answer's validation errors |
+
+  Waiting cannot fix a wrong answer, and re-sending the same request tends to
+  repeat the same mistake — so an invalid answer is retried **immediately**,
+  once, with the model told what was wrong: up to 10 error entries, field
+  paths and messages only, capped at 1,000 characters. The model's previous
+  answer is **not** resent. Each attempt records whether it carried that
+  feedback (`carried_feedback`), so the attempt log shows which tries were
+  informed ones.
+
+> **Deviation to sign off:** FR-023 reads as 3 attempts with backoff for
+> every failure. A schema failure now gets 2 immediate tries instead, because
+> the third try and the waits only ever cost tokens and latency. The
+> requirement text has not been reissued.
 - **Every** try produces an immutable `ProcessingAttempt`: number, trigger,
   provider, model version, start and end time, outcome
   (`valid`/`invalid`/`error`), the raw answer, the validation result, the
@@ -694,7 +730,8 @@ live module is in `app/domain/services/` or
 | Protected traits never extracted | FR-025 | schema shape + prompt + validator |
 | Prompt-injection defence (CV text is data) | NFR | `cv_extraction_prompt.py` |
 | Schema validation before anything is used | FR-022 | `llm_output_validator.py` |
-| Retries with increasing wait, then review | FR-023 | `cv_processing_service.py` |
+| Retries, then review — with backoff for a provider error and an immediate, informed retry for an invalid answer | FR-023 | `cv_processing_service.py` |
+| Emails and phones merged as a union, primary from the newest source | M-03 | `profile_builder.py` |
 | One immutable record per attempt | FR-058, FR-059 | `processing_attempt.py` |
 | Confidence on every field | FR-027 | `confidence.py` + `field_record_builder.py` |
 | Confidence computed from verifiable factors, not the model's claim | FR-048 | `confidence.py` |
