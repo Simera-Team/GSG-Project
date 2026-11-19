@@ -48,9 +48,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 CONTACT_KINDS = ('email', 'phone')
 
+contact_kind = postgresql.ENUM(*CONTACT_KINDS, name='contact_kind', create_type=False)
+
 
 def upgrade() -> None:
-    contact_kind = sa.Enum(*CONTACT_KINDS, name='contact_kind')
     contact_kind.create(op.get_bind(), checkfirst=True)
 
     op.create_table(
@@ -89,7 +90,26 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Restore primary email and phone to profile if they became null/empty
+    op.execute("""
+        UPDATE profile p
+           SET email = c.value
+          FROM profile_contact c
+         WHERE c.profile_id = p.profile_id
+           AND c.kind = 'email'
+           AND c.is_primary = true
+           AND (p.email IS NULL OR p.email = '')
+    """)
+    op.execute("""
+        UPDATE profile p
+           SET phone = c.value
+          FROM profile_contact c
+         WHERE c.profile_id = p.profile_id
+           AND c.kind = 'phone'
+           AND c.is_primary = true
+           AND (p.phone IS NULL OR p.phone = '')
+    """)
     op.drop_index('ix_profile_contact_value', table_name='profile_contact')
     op.drop_index('ix_profile_contact_profile_id', table_name='profile_contact')
     op.drop_table('profile_contact')
-    sa.Enum(name='contact_kind').drop(op.get_bind(), checkfirst=True)
+    contact_kind.drop(op.get_bind(), checkfirst=True)
