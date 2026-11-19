@@ -535,13 +535,15 @@ Builds the live profile from accepted field records (FR-036, FR-063).
   must never become a question to the candidate. They are unioned across
   every source and de-duplicated on the *normalised* value, so
   `Ahmad.K@Example.com` and `ahmad.k@example.com` are one address, and
-  `0790001234` and `+962 7 9000 1234` are one number. The profile keeps both
-  a `primary_email` / `primary_phone` — from the newest source
-  (`uploaded_at`, then source id; within one source, the first one listed) —
-  and the full `emails` / `phones` list, with every `field_id` that fed each
-  value (FR-063). They are therefore **out** of `PERSONAL_FIELDS` and out of
-  the candidate-fallback rows of `FIELD_POLICIES`; city and country keep
-  theirs (`C-05`). Agreement between sources still earns the `M-04` boost.
+  `0790001234` and `+962 7 9000 1234` are one number — one entry carrying
+  both sources' `field_ids` (FR-063). `personal_info.emails` / `.phones` are
+  therefore **lists of records**, each with its `value`, its `field_ids` and
+  `is_primary`, ordered with the newest source first; `primary_email` and
+  `primary_phone` are *computed* from that order, so there is no second copy
+  of a value that could disagree with the list. Contacts are **out** of
+  `PERSONAL_FIELDS` and out of the candidate-fallback rows of
+  `FIELD_POLICIES`; city and country keep theirs (`C-05`). Agreement between
+  sources still earns the `M-04` boost.
 - Groups work experience, education, certifications and projects with
   `match_entities` (`M-01`) and then runs the **same** ladder on every field
   of each group, so the `C-` rules apply inside an entity and not only to
@@ -686,6 +688,7 @@ looping. Logs carry ids and outcomes only, never CV content (NFR-022).
 | Table | Model file | Holds |
 |---|---|---|
 | `processing_attempt` | `persistence/models/processing_models.py` | One row per try: trigger, provider, model version, outcome, raw answer, validation result, timings, the limit used. Never overwritten (FR-058). |
+| `profile_contact` | same file | One row per email and phone of the candidate (M-03), with `field_ids` and the `is_primary` flag. `UNIQUE (profile_id, kind, value)` enforces the de-duplication the merge performs, and an index on `(kind, value)` is what lets a candidate be found by *any* of their addresses. `profile.email` / `profile.phone` keep the primary, denormalised. |
 | `extracted_field` | same file | One row per field record: value, raw value, confidence and its four parts, the model's own number, evidence, page, evidence status, rule, review reasons (FR-035). |
 | `review_item` / `review_option` | `persistence/models/review_models.py` | The needs-review queue with every competing value and its source (FR-041, FR-033). |
 | `profile_change_log` | same file | Field history: before, after, who, why (FR-037). |

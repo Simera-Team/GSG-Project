@@ -161,30 +161,21 @@ class ProfileBuilder:
             for r in candidates:
                 groups[_key(r.value)].append(r)
 
-            # For each unique value, find its newest representative record
-            unique_entries = []
-            for recs in groups.values():
-                best = max(recs, key=_contact_recency_key)
-                all_ids = [r.field_id for r in recs]
-                unique_entries.append((best, all_ids))
-
-            # Order: newest source (uploaded_at, then source id); within one source, first listed
+            # One entry per distinct value, each keeping every record that
+            # stated it, whichever source that was (FR-063).
+            unique_entries = [
+                (max(recs, key=_contact_recency_key), sorted(r.field_id for r in recs))
+                for recs in groups.values()
+            ]
+            # Order: newest source (uploaded_at, then source id); within one
+            # source, the first one listed. The first entry is the primary, so
+            # the primary is a position rather than a second copy of a value.
             unique_entries.sort(key=lambda item: _contact_recency_key(item[0]), reverse=True)
 
-            primary = unique_entries[0][0] if unique_entries else None
-            plural = name + "s"  # emails, phones
-
-            if primary:
-                info[name] = primary.value
-                info[f"primary_{name}"] = primary.value
-                info["field_ids"][name] = primary.field_id
-                info["field_ids"][f"primary_{name}"] = primary.field_id
-
-            info[plural] = [entry[0].value for entry in unique_entries]
-            all_plural_ids = []
-            for _, fids in unique_entries:
-                all_plural_ids.extend(fids)
-            info["field_ids"][plural] = all_plural_ids
+            info[name + "s"] = [
+                {"value": best.value, "is_primary": index == 0, "field_ids": field_ids}
+                for index, (best, field_ids) in enumerate(unique_entries)
+            ]
 
         for name in PERSONAL_FIELDS:
             # A reviewer's decision settles the field across all sources (FR-043);

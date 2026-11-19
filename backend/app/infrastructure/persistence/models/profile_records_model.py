@@ -23,6 +23,7 @@ from app.infrastructure.persistence.db.base import Base
 
 PARTIAL_DATE_REGEX = r"^\d{4}(-(0[1-9]|1[0-2]))?$"
 LINK_TYPE = Enum("linkedin", "github", "portfolio", "website", "other", name="link_type")
+CONTACT_KIND = Enum("email", "phone", name="contact_kind")
 
 
 def _date_column():
@@ -134,6 +135,35 @@ class LanguageModel(Base):
     profile_id: Mapped[int] = _profile_fk()
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     proficiency: Mapped[str | None] = mapped_column(String(30))
+    field_ids: Mapped[list[int]] = _field_ids()
+
+
+class ProfileContactModel(Base):
+    """One email address or phone number of the candidate (M-03).
+
+    A person has more than one of each, so these are a union across every
+    source rather than a single value with a conflict: two addresses are not a
+    disagreement to be settled but two addresses. The row the merge chose as
+    primary is also denormalised onto ``profile.email`` / ``profile.phone``,
+    which is what the common lookup reads; this table is what makes the rest
+    of them findable, and carries the field records behind each one (FR-063).
+
+    ``UNIQUE (profile_id, kind, value)`` is the de-duplication the merge
+    already did, enforced where it cannot be forgotten: the same address from
+    three sources is one row.
+    """
+
+    __tablename__ = "profile_contact"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "kind", "value", name="uq_profile_contact_value"),
+    )
+
+    contact_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    profile_id: Mapped[int] = _profile_fk()
+    kind: Mapped[str] = mapped_column(CONTACT_KIND, nullable=False)
+    value: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: The one the merge took from the newest source; exactly one per kind.
+    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     field_ids: Mapped[list[int]] = _field_ids()
 
 

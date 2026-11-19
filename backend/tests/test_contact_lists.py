@@ -17,6 +17,16 @@ OLDER = datetime(2024, 1, 1, tzinfo=timezone.utc)
 NEWER = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
+def values(contacts) -> list[str]:
+    """The addresses or numbers, in the order the merge put them."""
+    return [c.value for c in contacts]
+
+
+def primaries(contacts) -> list[str]:
+    """Exactly one entry per kind may be the primary, and it is the first."""
+    return [c.value for c in contacts if c.is_primary]
+
+
 def test_cv_with_two_emails_two_records_both_in_profile_no_review():
     """1. CV with two emails: two records, both in the profile, no review item."""
     data = answer()
@@ -43,10 +53,14 @@ def test_cv_with_two_emails_two_records_both_in_profile_no_review():
     result = ProfileBuilder(confidence_threshold=DEFAULT_REVIEW_CONFIDENCE).build(outcome.records)
     profile = result.profile
     assert profile is not None
-    assert len(profile.personal_info.emails) == 2
-    assert profile.personal_info.emails == ["rana.work@example.com", "rana.personal@example.com"]
-    assert profile.personal_info.email == "rana.work@example.com"
+    emails = profile.personal_info.emails
+    assert len(emails) == 2
+    assert values(emails) == ["rana.work@example.com", "rana.personal@example.com"]
+    # Within one source the first one listed is the primary, and only it.
+    assert primaries(emails) == ["rana.work@example.com"]
     assert profile.personal_info.primary_email == "rana.work@example.com"
+    # FR-063: each address carries the record it was read from, not a shared pile.
+    assert [c.field_ids for c in emails] == [[r.field_id] for r in email_records]
     email_reviews = [i for i in result.review_items if i.field_name in ("email", "emails")]
     assert email_reviews == []
 
@@ -68,8 +82,12 @@ def test_cv_email_a_linkedin_email_b_both_kept_primary_is_b():
     result = ProfileBuilder(confidence_threshold=DEFAULT_REVIEW_CONFIDENCE).build([r_cv, r_li])
     profile = result.profile
     assert profile is not None
-    assert set(profile.personal_info.emails) == {"email.a@example.com", "email.b@example.com"}
-    assert profile.personal_info.email == "email.b@example.com"
+    emails = profile.personal_info.emails
+    assert set(values(emails)) == {"email.a@example.com", "email.b@example.com"}
+    # The newer source leads the list, so it is the primary - without anyone
+    # being asked which address is "right".
+    assert values(emails)[0] == "email.b@example.com"
+    assert primaries(emails) == ["email.b@example.com"]
     assert profile.personal_info.primary_email == "email.b@example.com"
     assert not any(i.field_name in ("email", "emails") for i in result.review_items)
 
@@ -93,14 +111,15 @@ def test_email_case_variants_merge_to_one_with_m04_boost():
     result = ProfileBuilder(confidence_threshold=0.65).build([r_cv, r_li])
     profile = result.profile
     assert profile is not None
-    assert profile.personal_info.emails == ["ahmad.k@example.com"]
-    assert profile.personal_info.email == "ahmad.k@example.com"
+    emails = profile.personal_info.emails
+    assert values(emails) == ["ahmad.k@example.com"]
     assert profile.personal_info.primary_email == "ahmad.k@example.com"
+    # One address, both sources behind it: that is what the M-04 boost is for.
+    assert emails[0].field_ids == [1, 2]
     assert r_cv.confidence == 0.67
     assert r_li.confidence == 0.67
     assert r_cv.confidence_parts.agreement == 0.05
     assert r_li.confidence_parts.agreement == 0.05
-    assert set(profile.personal_info.field_ids["emails"]) == {1, 2}
     assert not any(i.field_name in ("email", "emails") for i in result.review_items)
 
 
@@ -121,10 +140,13 @@ def test_phone_local_and_international_merge_to_one_phone():
     result = ProfileBuilder(confidence_threshold=DEFAULT_REVIEW_CONFIDENCE).build([r_cv, r_li])
     profile = result.profile
     assert profile is not None
-    assert profile.personal_info.phones == ["+962790001234"]
-    assert profile.personal_info.phone == "+962790001234"
+    phones = profile.personal_info.phones
+    assert values(phones) == ["+962790001234"]
     assert profile.personal_info.primary_phone == "+962790001234"
-    assert set(profile.personal_info.field_ids["phones"]) == {1, 2}
+    # "0790001234" and "+962 7 9000 1234" are one number, so one row with both
+    # records behind it.
+    assert phones[0].field_ids == [1, 2]
+    assert profile.personal_info.primary_phone == "+962790001234"
     assert not any(i.field_name in ("phone", "phones") for i in result.review_items)
 
 

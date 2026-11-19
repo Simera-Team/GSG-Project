@@ -10,7 +10,7 @@ Every record carries `field_ids`: the field records that produced it
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field
 
 from app.application.dto.cv_extraction import LinkType, ProficiencyLevel
 
@@ -48,20 +48,56 @@ class _Matched(_Strict):
                              description="M-01 when sources were merged into this record")
 
 
+class _Contact(_Strict):
+    """One way to reach the candidate: an address or a number (M-03).
+
+    Each one carries its own ``field_ids``, like every other repeated record in
+    this document, so a contact traces back to the source text it was read
+    from rather than sharing a pile of ids with the others (FR-063).
+
+    The list is ordered: the first entry is the one the merge took from the
+    newest source, and it is the one flagged ``is_primary``. There is no
+    separate "primary" value stored anywhere, so the two can never disagree.
+    """
+
+    is_primary: bool = False
+    field_ids: list[int] = Field(default_factory=list)
+
+
+class EmailRecord(_Contact):
+    value: EmailStr
+
+
+class PhoneRecord(_Contact):
+    value: str = Field(max_length=50)
+
+
 class PersonalInfoRecord(_Strict):
     first_name: str | None = Field(default=None, max_length=100)
     last_name: str | None = Field(default=None, max_length=100)
-    email: EmailStr | None = None
-    primary_email: EmailStr | None = None
-    emails: list[EmailStr] = Field(default_factory=list)
-    phone: str | None = Field(default=None, max_length=50)
-    primary_phone: str | None = Field(default=None, max_length=50)
-    phones: list[str] = Field(default_factory=list)
+    # A person has more than one of each, so a contact is a list, never a
+    # single value two sources can disagree about (M-03). Every address and
+    # number the sources state is here, de-duplicated on the normalised value
+    # and ordered with the newest source's first.
+    emails: list[EmailRecord] = Field(default_factory=list)
+    phones: list[PhoneRecord] = Field(default_factory=list)
     city: str | None = Field(default=None, max_length=100)
     country: CountryValue | None = None
     title: str | None = Field(default=None, max_length=255)
     summary: str | None = None
-    field_ids: dict[str, int | list[int]] = Field(default_factory=dict, description="field name -> field record id(s)")
+    field_ids: dict[str, int] = Field(default_factory=dict,
+                                      description="field name -> field record id")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def primary_email(self) -> str | None:
+        """The address the merge chose, derived rather than stored."""
+        return self.emails[0].value if self.emails else None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def primary_phone(self) -> str | None:
+        return self.phones[0].value if self.phones else None
 
 
 class ExperienceRecord(_Matched):

@@ -28,6 +28,7 @@ from app.infrastructure.persistence.models import (
     ExtractedFieldModel,
     LanguageModel,
     ProcessingAttemptModel,
+    ProfileContactModel,
     ProfileLinkModel,
     ProfileModel,
     ProfileSkillModel,
@@ -41,7 +42,7 @@ from app.infrastructure.persistence.models import (
 from app.infrastructure.persistence.repositories.file_repository import SourceFileRepository
 
 CHILD_TABLES = (ProfileSkillModel, WorkExperienceModel, EducationModel, CertificationModel,
-                ProjectModel, LanguageModel, ProfileLinkModel)
+                ProjectModel, LanguageModel, ProfileContactModel, ProfileLinkModel)
 
 
 class SqlProcessingRepository(IProcessingRepository):
@@ -165,6 +166,15 @@ class SqlProcessingRepository(IProcessingRepository):
             for m, source_kind, uploaded_at in rows
         ]
 
+    def _save_contacts(self, profile_id: int, info) -> None:
+        """Write every email and phone of the profile, with its own ids (M-03)."""
+        for kind, contacts in (("email", info.emails), ("phone", info.phones)):
+            for contact in contacts:
+                self.db.add(ProfileContactModel(
+                    profile_id=profile_id, kind=kind, value=contact.value,
+                    is_primary=contact.is_primary, field_ids=list(contact.field_ids),
+                ))
+
     def save_rejected_values(self, attempt_id, rejected) -> None:
         """Store the values an R- rule dropped, with the attempt that read them.
 
@@ -252,7 +262,10 @@ class SqlProcessingRepository(IProcessingRepository):
         info = profile.personal_info
         model = self.db.get(ProfileModel, profile_id)
         model.first_name, model.last_name = info.first_name, info.last_name
-        model.email, model.phone, model.city = info.email, info.phone, info.city
+        # The primary is denormalised onto the profile so the common read needs
+        # no join; every address and number lives in profile_contact below.
+        model.email, model.phone = info.primary_email, info.primary_phone
+        model.city = info.city
         model.title, model.summary = info.title, info.summary
         model.country_id = (
             self.db.scalar(select(CountryModel.country_id)
@@ -260,6 +273,10 @@ class SqlProcessingRepository(IProcessingRepository):
             if info.country else None
         )
         model.final_json = profile.model_dump(mode="json")
+
+        # M-03: one row per address and number, so a candidate can be found by
+        # any of them and each traces back to its field records (FR-063).
+        self._save_contacts(profile_id, info)
 
         confidence = {r.field_id: r.confidence for r in records}
         skill_ids = dict(self.db.execute(select(SkillModel.canonical_name, SkillModel.skill_id)).all())

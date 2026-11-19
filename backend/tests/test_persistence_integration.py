@@ -22,7 +22,8 @@ pytestmark = pytest.mark.skipif("test" not in URL.rsplit("/", 1)[-1],
                                 reason="TEST_DATABASE_URL to a *test* database not set")
 
 DATA_TABLES = ("profile_change_log, review_option, review_item, vetting_record, profile_skill, work_experience, "
-               "education, certification, project, language, profile_link, extracted_field, "
+               "education, certification, project, language, profile_contact, profile_link, "
+               "extracted_field, "
                "processing_attempt, source_file, profile, app_user")
 
 
@@ -103,6 +104,14 @@ def test_processing_saves_attempts_fields_reviews_and_profile(db, tmp_path):
     skill = db.execute(text("SELECT s.canonical_name, ps.source_file_ids, ps.field_ids "
                             "FROM profile_skill ps JOIN skill s USING (skill_id)")).one()
     assert skill[0] == "React" and skill[1] == [file_id] and set(skill[2]) <= stored
+
+    # M-03: every email is a queryable row, not just a key in final_json, and
+    # exactly one of them is the primary that profile.email also holds.
+    contacts = db.execute(text("SELECT kind, value, is_primary, field_ids "
+                               "FROM profile_contact ORDER BY kind, value")).all()
+    assert [(c[0], c[1]) for c in contacts] == [("email", "rana.odeh@example.com")]
+    assert contacts[0][2] is True and contacts[0][3]
+    assert scalar(db, "SELECT email FROM profile") == "rana.odeh@example.com"
 
     # FR-048: the stored confidence is explainable from its stored parts, and
     # the model's own number is kept next to it without being used.
