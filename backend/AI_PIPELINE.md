@@ -800,13 +800,13 @@ Levels 2–4 need them; level 1 does not.
 ```bash
 cd backend
 pip install -r requirements.txt       # runtime, incl. extraction + Gemini
-pip install -r requirements-dev.txt   # pytest
+pip install -r requirements-dev.txt   # the test tools, runtime included
 cp .env.example .env                  # then fill in GEMINI_API_KEY
 ```
 
-`requirements-dev.txt` lists `httpx2`, which looks like a typo for `httpx`
-(what FastAPI's `TestClient` needs). If the API tests fail to import, install
-`httpx` instead.
+`requirements-dev.txt` lists `httpx2`, which is **not** a typo: it is the
+maintained successor to `httpx`, Starlette's `TestClient` prefers it
+(`import httpx2 as httpx`), and `google-genai` requires it outright.
 
 ### Level 1 — the logic, with no key, no database and no network
 
