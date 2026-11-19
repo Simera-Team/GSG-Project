@@ -53,6 +53,12 @@ class SqlSettingsRepository:
 
         Jobs already finished keep the limit they ran under, because each job
         stores it on its attempts; the new limit applies to later jobs only.
+
+        The write is committed here, as :class:`UserRepository` does for the
+        other endpoint that reaches a repository directly: there is no service
+        or unit of work between the settings router and this class, and
+        ``get_db`` closes the request's session without committing. Flushing
+        alone would answer 200 with a value that is rolled back a moment later.
         """
         if not 0.0 <= value <= 1.0:
             raise ValueError("The confidence limit must be between 0 and 1")
@@ -69,7 +75,7 @@ class SqlSettingsRepository:
         row.value = repr(float(value))
         row.updated_by = user_id
         row.updated_at = datetime.now(timezone.utc)
-        self.db.flush()
+        self.db.commit()
         return _view(row)
 
     def list_settings(self) -> list[SettingView]:
