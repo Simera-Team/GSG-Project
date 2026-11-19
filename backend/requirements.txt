@@ -44,7 +44,6 @@ yarl==1.25.1
 
 # CV processing: text extraction, OCR, LLM
 google-genai==3.3.0
-langchain-core==1.8.1
 httpx2==2.16.0
 lxml==6.1.3
 numpy==2.5.4

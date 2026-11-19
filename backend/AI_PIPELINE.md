@@ -705,21 +705,6 @@ transaction. Its `load_profile_field_records` joins `source_file` to carry
 
 ---
 
-## The staging package
-
-`app/application/ai/` is **not** the live path. Nothing outside that folder
-imports it. It came from the `feature/ai-architecture` branch and is kept
-because four of its stages have no equivalent in the live path yet. Its
-[README](app/application/ai/README.md) is the authority: a table of which
-modules are superseded by which live module, which differences are
-deliberate, and what is still pending.
-
-**Editing a file there changes nothing.** If a behaviour needs changing, the
-live module is in `app/domain/services/` or
-`app/application/services/`.
-
----
-
 ## AI features, and where each one lives
 
 | Feature | Requirement | Where |
