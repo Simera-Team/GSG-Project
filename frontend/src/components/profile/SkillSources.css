@@ -1,0 +1,27 @@
+.skill-source-trigger { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; padding: 4px; margin: -3px -3px -3px 1px; min-width: 24px; min-height: 24px; border: 0; border-radius: 4px; background: transparent; color: #537568; cursor: pointer; }
+.skill-source-trigger:hover { color: #103b48; background: #dfeadb; }
+.skill-source-trigger:focus-visible { outline: 2px solid #967124; outline-offset: 2px; }
+.skill-source-dialog { width: min(420px,calc(100% - 32px)); max-height: 80dvh; overflow-y: auto; box-sizing: border-box; margin: auto; padding: 23px; border: 1px solid #dbe4d4; border-radius: 13px; background: #fffefa; color: #103b48; box-shadow: 0 20px 65px #103b482b; font: 13px/1.7 "DM Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+.skill-source-dialog::backdrop { background: #12382b45; }
+.source-panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.source-panel-header h2 { margin: 0; font-size: 17px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.source-close { flex-shrink: 0; display: grid; place-items: center; width: 32px; height: 32px; margin: -4px -6px 0 0; padding: 0; border: 0; border-radius: 5px; background: transparent; color: #526c60; cursor: pointer; }
+.source-close:hover { background: #edf2e8; }
+.source-profile-value { display: grid; gap: 4px; margin: 16px 0 18px; }
+.source-profile-value > span { font-size: 10px; color: #5c7366; }
+.source-profile-value strong { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.source-document-list { display: grid; gap: 17px; padding: 0; margin: 0; list-style: none; }
+.source-document-list li { padding-top: 15px; border-top: 1px solid #e1e8da; }
+.source-document-label { display: block; font-size: 10px; color: #63775f; margin-bottom: 8px; }
+.source-document-name { display: flex; gap: 8px; align-items: flex-start; }
+.source-document-name svg { flex-shrink: 0; margin-top: 3px; color: #52765b; }
+.source-document-name strong { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.source-document-type { display: block; margin: 7px 0 10px 25px; font-size: 10px; color: #5d7462; }
+.source-action { display: inline-flex; gap: 6px; align-items: center; padding: 0; border: 0; background: transparent; color: #176b64 !important; font: inherit; font-size: 11px; font-weight: 600; text-decoration: none; cursor: pointer; }
+.source-action:hover { text-decoration: underline; text-underline-offset: 3px; }
+.source-document-list .source-action { margin-top: 4px; }
+.source-panel-note { font-size: 11px; line-height: 1.8; color: #5f7366; margin: 18px 0 0; }
+.source-unavailable { margin-top: 16px; padding: 12px; background: #f3f6ed; border-radius: 7px; }
+.source-unavailable p { margin: 0 0 6px; font-size: 11px; color: #5c715f; }
+.skill-source-dialog :is(a,button):focus-visible { outline: 2px solid #967124; outline-offset: 3px; }
+@media (max-width: 480px) { .skill-source-dialog { padding: 20px; } .skill-source-trigger { min-width: 28px; min-height: 28px; } }

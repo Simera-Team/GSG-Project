@@ -1,0 +1,22 @@
+<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="CVerge">
+        <rect width="100" height="100" rx="25" fill="#103B48" />
+        <path
+          d="M19 28 H47 C58 28 62 39 72 50"
+          stroke="white"
+          stroke-width="6"
+          stroke-linecap="round"
+        />
+        <path
+          d="M19 50 H72"
+          stroke="white"
+          stroke-width="6"
+          stroke-linecap="round"
+        />
+        <path
+          d="M19 72 H47 C58 72 62 61 72 50"
+          stroke="white"
+          stroke-width="6"
+          stroke-linecap="round"
+        />
+        <circle cx="76" cy="50" r="10" fill="#EFB54A" />
+      </svg>
