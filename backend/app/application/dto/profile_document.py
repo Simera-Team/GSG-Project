@@ -8,9 +8,9 @@ Every record carries `field_ids`: the field records that produced it
 (FR-063), so each profile value can be traced back to its source.
 """
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, model_validator
 
 from app.application.dto.cv_extraction import LinkType, ProficiencyLevel
 
@@ -72,6 +72,13 @@ class PhoneRecord(_Contact):
     value: str = Field(max_length=50)
 
 
+#: Keys PersonalInfoRecord writes but never reads as input: the derived
+#: primaries, and the pre-M-03 single-value names.
+_DERIVED_CONTACT_KEYS = ("primary_email", "primary_phone", "email", "phone")
+#: A pre-M-03 single value, and the list it now lives in.
+_LEGACY_CONTACT_LISTS = {"email": "emails", "phone": "phones"}
+
+
 class PersonalInfoRecord(_Strict):
     first_name: str | None = Field(default=None, max_length=100)
     last_name: str | None = Field(default=None, max_length=100)
@@ -88,6 +95,28 @@ class PersonalInfoRecord(_Strict):
     field_ids: dict[str, int] = Field(default_factory=dict,
                                       description="field name -> field record id")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_stored_shape(cls, data: Any) -> Any:
+        """Read back what this model writes, and what it used to write.
+
+        ``final_json`` is a dump of this model, so it carries the derived
+        values below. They are output only: drop them on the way in, or
+        ``extra="forbid"`` rejects every stored profile.
+
+        Profiles saved before M-03 hold one ``email`` / ``phone`` string and no
+        lists; that string was the primary, so it becomes the one-entry list.
+        """
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        for derived in _DERIVED_CONTACT_KEYS:
+            value = data.pop(derived, None)
+            list_key = _LEGACY_CONTACT_LISTS.get(derived)
+            if list_key and value and not data.get(list_key):
+                data[list_key] = [{"value": value, "is_primary": True}]
+        return data
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def primary_email(self) -> str | None:
@@ -98,6 +127,21 @@ class PersonalInfoRecord(_Strict):
     @property
     def primary_phone(self) -> str | None:
         return self.phones[0].value if self.phones else None
+
+    # The single-value names the profile had before M-03. API clients (the
+    # web app among them) read ``personal_info.email`` / ``.phone``; keeping
+    # them as the primary means the list change does not break any reader.
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def email(self) -> str | None:
+        """Same as ``primary_email``; kept for clients of the pre-M-03 format."""
+        return self.primary_email
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def phone(self) -> str | None:
+        """Same as ``primary_phone``; kept for clients of the pre-M-03 format."""
+        return self.primary_phone
 
 
 class ExperienceRecord(_Matched):

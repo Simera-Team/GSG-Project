@@ -176,3 +176,66 @@ def test_city_still_conflicts_and_reaches_candidate_c05():
     assert "C-05" in city_reviews[0].message
     assert result.profile.personal_info.city is None
 
+
+
+# ---- the stored profile is read back by the API ----
+
+_EMPTY_LISTS = {k: [] for k in ("experience", "education", "skills", "certifications",
+                                "projects", "languages", "links")}
+
+
+def _stored_profile(personal_info: dict) -> dict:
+    from app.application.dto.profile_document import ProfileDocument
+    doc = ProfileDocument.model_validate({"personal_info": personal_info, **_EMPTY_LISTS})
+    return doc.model_dump(mode="json")
+
+
+def _served_personal_info(final_json: dict) -> dict:
+    """What GET /profile sends for this final_json: it re-validates the dump."""
+    from app.presentation.schemas.profile_schema import ProfileOut
+    out = ProfileOut(profile_id=1, candidate_name="Rana", candidate_email="login@example.com",
+                     updated_at=None, open_reviews=0, profile=final_json, files=[])
+    return out.model_dump(mode="json")["profile"]["personal_info"]
+
+
+def test_a_stored_profile_with_contact_lists_can_be_served():
+    """final_json holds the derived primaries; reading it back must not reject them."""
+    stored = _stored_profile({
+        "emails": [{"value": "rana.work@example.com", "is_primary": True},
+                   {"value": "rana.personal@example.com"}],
+        "phones": [{"value": "+962790001234", "is_primary": True}],
+    })
+    assert stored["personal_info"]["primary_email"] == "rana.work@example.com"
+
+    served = _served_personal_info(stored)
+
+    assert values_of(served["emails"]) == ["rana.work@example.com", "rana.personal@example.com"]
+    assert served["primary_email"] == "rana.work@example.com"
+    assert served["primary_phone"] == "+962790001234"
+
+
+def test_served_profile_keeps_the_single_email_and_phone_clients_read():
+    """The web app reads personal_info.email / .phone; they stay, as the primary."""
+    served = _served_personal_info(_stored_profile({
+        "emails": [{"value": "rana.work@example.com", "is_primary": True}],
+        "phones": [{"value": "+962790001234", "is_primary": True}],
+    }))
+    assert served["email"] == "rana.work@example.com"
+    assert served["phone"] == "+962790001234"
+
+
+def test_a_profile_saved_before_contact_lists_is_still_served():
+    """Pre-M-03 final_json has one email / phone string and no lists."""
+    legacy = _stored_profile({})
+    legacy["personal_info"] = {"first_name": "Rana", "email": "rana@example.com",
+                               "phone": "+962790001234", "field_ids": {}}
+
+    served = _served_personal_info(legacy)
+
+    assert served["email"] == "rana@example.com"
+    assert served["phone"] == "+962790001234"
+    assert served["emails"] == [{"is_primary": True, "field_ids": [], "value": "rana@example.com"}]
+
+
+def values_of(contacts: list[dict]) -> list[str]:
+    return [c["value"] for c in contacts]
