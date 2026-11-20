@@ -7,6 +7,7 @@ from app.application.services.cv_processing_service import CVProcessingService, 
 from app.core.exceptions import LLMProviderError
 from app.domain.entities.field_record import ReviewReason
 from app.domain.entities.processing_attempt import AttemptOutcome, AttemptTrigger
+from app.domain.services.confidence import DEFAULT_REVIEW_CONFIDENCE
 from app.infrastructure.reference_data import seed_country_catalog, seed_skill_catalog
 from tests.helpers import CV_TEXT, answer, as_json, f
 
@@ -19,9 +20,11 @@ class FakeAI(IAIClient):
     def __init__(self, *replies):
         self.replies = list(replies)
         self.calls = 0
+        self.user_prompts = []
 
     def generate_structured(self, system_prompt, user_prompt, json_schema):
         self.calls += 1
+        self.user_prompts.append(user_prompt)
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
@@ -31,11 +34,19 @@ class FakeAI(IAIClient):
 
 def make_service(ai, waits=None):
     return CVProcessingService(ai, seed_country_catalog(), seed_skill_catalog(),
-                               confidence_threshold=0.6,
+                               confidence_threshold=DEFAULT_REVIEW_CONFIDENCE,
                                sleep=(waits.append if waits is not None else lambda s: None))
 
 
 DOC = ExtractedDocument(source_name="rana.docx", text=CV_TEXT)
+
+#: The same CV as a scan the OCR engine was unsure of, which is what the
+#: confidence model reads as uncertainty now (FR-018, FR-048).
+SCAN = ExtractedDocument(
+    source_name="rana.pdf", text=CV_TEXT, page_texts=[CV_TEXT],
+    extraction_method="ocr", ocr_confidence=0.5,
+    page_ocr_confidence=[0.5], page_text_layers=[""],
+)
 
 
 def test_valid_first_try_builds_profile_from_field_records():
@@ -58,7 +69,12 @@ def test_valid_first_try_builds_profile_from_field_records():
     # FR-063: every profile record points at existing field records
     ids = {r.field_id for r in result.field_records}
     assert set(job.field_ids) <= ids
-    assert set(profile.personal_info.field_ids.values()) <= ids
+    personal_ids = {
+        fid
+        for v in profile.personal_info.field_ids.values()
+        for fid in (v if isinstance(v, list) else [v])
+    }
+    assert personal_ids <= ids
 
 
 def test_unknown_skill_goes_to_review_and_stays_out_of_profile():
@@ -80,54 +96,113 @@ def test_unknown_country_left_empty_and_queued():
     assert any(ReviewReason.UNKNOWN_COUNTRY in r.reasons for r in result.review_items)
 
 
-def test_value_without_evidence_in_text_is_flagged():
+def test_value_without_evidence_in_text_is_rejected():
+    """R-03: a value that is not in the document is dropped, not queued. There
+    is nothing for a person to decide, so it becomes no field record and no
+    review item - only an entry on the attempt's rejected list (NFR-028)."""
     data = answer()
     data["personal_info"]["city"] = f("Dubai", "Dubai, UAE")       # not in the CV
     result = make_service(FakeAI(as_json(data))).process(DOC)
+
     assert result.profile.personal_info.city is None
-    assert any(ReviewReason.EVIDENCE_NOT_FOUND in r.reasons for r in result.review_items)
+    assert not [r for r in result.field_records if r.field_name == "city"]
+    assert not [i for i in result.review_items if i.field_name == "city"]
+    assert [r.raw_value for r in result.rejected if r.field_name == "city"] == ["Dubai"]
+    assert all(r.reason == "R-03" for r in result.rejected)
 
 
 def test_low_confidence_is_flagged():
+    """What makes a value uncertain is the page it was read from, not what the
+    model said about itself: the same answer off a 0.50 scan is held back."""
     data = answer()
-    data["personal_info"]["last_name"] = f("Odeh", "Rana Odeh", confidence=0.4)
-    result = make_service(FakeAI(as_json(data))).process(DOC)
+    data["personal_info"]["last_name"] = f("Odeh", "Rana Odeh", confidence=0.99)
+    result = make_service(FakeAI(as_json(data))).process(SCAN)
+
     assert result.profile.personal_info.last_name is None
     assert any(ReviewReason.LOW_CONFIDENCE in r.reasons for r in result.review_items)
+    held = next(r for r in result.field_records if r.field_name == "last_name")
+    assert (held.confidence, held.model_confidence) == (0.5, 0.99)
 
 
-def test_invalid_then_valid_retries_with_increasing_wait():
+def test_invalid_then_valid_retries_immediately_with_errors_in_prompt():
+    """Test 6: Invalid, then valid: 2 attempts, no sleep called, the second prompt contains the errors."""
     waits = []
-    ai = FakeAI("not json", '{"personal_info": {}}', as_json(answer()))
+    ai = FakeAI("not json", as_json(answer()))
     result = make_service(ai, waits).process(DOC)
 
+    assert ai.calls == 2
+    assert len(result.attempts) == 2
+    assert waits == []  # Retry immediately, no wait
     assert [a.outcome for a in result.attempts] == [
-        AttemptOutcome.INVALID, AttemptOutcome.INVALID, AttemptOutcome.VALID]
+        AttemptOutcome.INVALID, AttemptOutcome.VALID]
     assert [a.trigger for a in result.attempts] == [
-        AttemptTrigger.FIRST_RUN, AttemptTrigger.AUTO_RETRY, AttemptTrigger.AUTO_RETRY]
-    assert waits == [2.0, 4.0]
+        AttemptTrigger.FIRST_RUN, AttemptTrigger.AUTO_RETRY]
+    assert result.attempts[0].carried_feedback is False
+    assert result.attempts[1].carried_feedback is True
+    assert "Your previous answer did not match the schema:" in ai.user_prompts[1]
     assert result.profile is not None
 
 
-def test_three_failures_send_job_to_review_without_profile():
-    ai = FakeAI(LLMProviderError("server error 503", retryable=True),
-                "not json",
-                LLMProviderError("network error", retryable=True))
-    result = make_service(ai).process(DOC)
+def test_invalid_twice_stops_after_two_attempts_and_goes_to_review():
+    """Test 7: Invalid twice: stops after 2 attempts and goes to review with the reason."""
+    waits = []
+    ai = FakeAI("not json", '{"personal_info": {}}')
+    result = make_service(ai, waits).process(DOC)
+
+    assert ai.calls == 2
+    assert len(result.attempts) == 2
+    assert waits == []  # No wait for invalid retries
+    assert result.status == JobStatus.FAILED
+    assert result.profile is None
+    assert result.review_items[0].reasons == [ReviewReason.LLM_FAILED]
+    assert "invalid answer" in result.review_items[0].message
+
+
+def test_timeout_timeout_valid_three_attempts_with_backoff():
+    """Test 8: Timeout, timeout, valid: 3 attempts with backoff."""
+    waits = []
+    ai = FakeAI(
+        LLMProviderError("timeout", retryable=True),
+        LLMProviderError("timeout", retryable=True),
+        as_json(answer()),
+    )
+    result = make_service(ai, waits).process(DOC)
 
     assert ai.calls == 3
+    assert len(result.attempts) == 3
+    assert waits == [2.0, 4.0]
+    assert [a.outcome for a in result.attempts] == [
+        AttemptOutcome.ERROR, AttemptOutcome.ERROR, AttemptOutcome.VALID]
+    assert result.profile is not None
+
+
+def test_timeout_then_invalid_twice_stops_at_three_attempts_total():
+    """Test 9: Timeout, then invalid twice: stops at 3 attempts in total."""
+    waits = []
+    ai = FakeAI(
+        LLMProviderError("timeout", retryable=True),
+        "not json",
+        '{"personal_info": {}}',
+    )
+    result = make_service(ai, waits).process(DOC)
+
+    assert ai.calls == 3
+    assert len(result.attempts) == 3
+    assert waits == [2.0]  # Only provider timeout waited; invalid was immediate
+    assert [a.outcome for a in result.attempts] == [
+        AttemptOutcome.ERROR, AttemptOutcome.INVALID, AttemptOutcome.INVALID]
     assert result.status == JobStatus.FAILED
-    assert result.profile is None and result.field_records == []
-    item = result.review_items[0]
-    assert item.reasons == [ReviewReason.LLM_FAILED]
-    assert item.field_name is None and item.source == "rana.docx"   # FR-042
-    assert "network error" in item.message
+    assert result.profile is None
 
 
 def test_non_retryable_error_stops_immediately():
-    ai = FakeAI(LLMProviderError("400: API key not valid", retryable=False))
-    result = make_service(ai).process(DOC)
+    """Test 10: Non-retryable provider error (e.g. 401): 1 attempt, fails at once."""
+    waits = []
+    ai = FakeAI(LLMProviderError("401: Unauthorized", retryable=False))
+    result = make_service(ai, waits).process(DOC)
     assert ai.calls == 1
+    assert len(result.attempts) == 1
+    assert waits == []
     assert result.status == JobStatus.FAILED
 
 

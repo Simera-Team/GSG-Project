@@ -17,6 +17,7 @@ class SourceFileRepository(ISourceFileRepository):
         model = SourceFileModel(
             profile_id=source_file.profile_id,
             file_type=source_file.file_type,
+            source_kind=source_file.source_kind,
             original_name=source_file.original_name,
             file_hash=source_file.file_hash,
             storage_path=source_file.storage_path,
@@ -64,6 +65,7 @@ class SourceFileRepository(ISourceFileRepository):
             file_id=model.file_id,
             profile_id=model.profile_id,
             file_type=model.file_type,
+            source_kind=model.source_kind,
             original_name=model.original_name,
             file_hash=model.file_hash,
             storage_path=model.storage_path,
@@ -74,5 +76,6 @@ class SourceFileRepository(ISourceFileRepository):
             llm_response=model.llm_response,
             uploaded_at=model.uploaded_at,
             finished_at=model.finished_at,
-            num_of_retries=model.num_of_retries
+            num_of_retries=model.num_of_retries,
+            rule=getattr(model, "rule", None),
         )

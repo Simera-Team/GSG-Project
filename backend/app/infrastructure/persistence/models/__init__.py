@@ -11,7 +11,9 @@ from .profile_records_model import (
     CertificationModel,
     ProjectModel,
     LanguageModel,
+    ProfileContactModel,
     ProfileLinkModel,
 )
 from .review_models import ReviewItemModel, ReviewOptionModel, ProfileChangeLogModel
 from .vetting_model import VettingRecordModel
+from .system_setting_model import SystemSettingModel

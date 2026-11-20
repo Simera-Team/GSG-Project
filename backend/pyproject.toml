@@ -24,6 +24,7 @@ dependencies = [
     "python-docx",
     "rapidocr",
     "onnxruntime",
+    "opencv-python-headless",
     "google-genai",
     "aio-pika"
 ]

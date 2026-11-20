@@ -119,6 +119,11 @@ class SqlReviewRepository(IReviewRepository):
         model = ExtractedFieldModel(
             file_id=file_id, attempt_id=attempt_id, entity=entity, entity_type=entity_type,
             field_name=field_name, raw_value=raw_value, value=value, confidence=1.0,
+            # A person decided this, so every factor the confidence model would
+            # weigh is 1.00: there is no text layer to doubt, no snippet to
+            # match, no repair and no table lookup (FR-043).
+            confidence_parts={"base": 1.0, "evidence": 1.0,
+                              "validation": 1.0, "mapping": 1.0},
             evidence=evidence, page=page, evidence_status="reviewer", rule=DECISION_RULE,
             review_status="accepted", review_reasons=[], is_winner=True)
         self.db.add(model)

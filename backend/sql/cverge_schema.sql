@@ -1,8 +1,10 @@
 -- ---------- ENUMS ----------
 CREATE TYPE user_role   AS ENUM ('candidate', 'reviewer', 'administrator');  -- requirements.md §2.10
 CREATE TYPE file_type   AS ENUM ('pdf', 'docx', 'md', 'json');  -- file extension without the dot
+CREATE TYPE source_kind AS ENUM ('cv', 'linkedin', 'vetting');  -- FR-053: kind of source, separate from the format
 CREATE TYPE file_status AS ENUM ('uploaded', 'processing', 'done', 'failed', 'needs_review');
 CREATE TYPE link_type   AS ENUM ('linkedin', 'github', 'portfolio', 'website', 'other');
+CREATE TYPE contact_kind AS ENUM ('email', 'phone');  -- M-03: a person has several of each
 CREATE TYPE attempt_trigger AS ENUM ('first_run', 'auto_retry', 'admin_rerun');  -- FR-058
 CREATE TYPE attempt_outcome AS ENUM ('valid', 'invalid', 'error');
 
@@ -37,6 +39,9 @@ CREATE TABLE country (
 
 -- ---------- FINAL DESTINATION ----------
 -- One merged profile per user. One-value-per-person fields live here.
+-- email and phone hold the *primary* contact (M-03), denormalised from
+-- profile_contact so the common read needs no join; every other address and
+-- number the sources stated is a row in that table.
 CREATE TABLE profile (
   profile_id  SERIAL PRIMARY KEY,
   user_id     INT NOT NULL UNIQUE REFERENCES app_user(user_id) ON DELETE CASCADE,
@@ -65,10 +70,22 @@ CREATE TRIGGER trg_profile_updated_at
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- ---------- UPLOADED FILES ----------
+-- Settings an administrator changes at runtime (FR-046, FR-067).
+-- The limit each job used is stored on that job's attempts, so a change here
+-- applies to later jobs only and an old decision stays explainable.
+CREATE TABLE system_setting (
+  key         VARCHAR(64) PRIMARY KEY,
+  value       TEXT NOT NULL,
+  description TEXT,
+  updated_by  INT REFERENCES app_user(user_id) ON DELETE SET NULL,  -- null until changed
+  updated_at  TIMESTAMP NOT NULL DEFAULT now()
+);
+
 CREATE TABLE source_file (
   file_id           SERIAL PRIMARY KEY,
   profile_id        INT NOT NULL REFERENCES profile(profile_id) ON DELETE CASCADE,
   file_type         file_type NOT NULL,
+  source_kind       source_kind NOT NULL,       -- FR-053: set by the upload route, immutable
   original_name     VARCHAR(255) NOT NULL,
   file_hash         CHAR(64) NOT NULL UNIQUE,   -- SHA-256: same file twice = no duplicate
   storage_path      TEXT NOT NULL,              -- raw file, never overwritten
@@ -151,6 +168,23 @@ CREATE TABLE language (                         -- spoken languages (not program
   proficiency VARCHAR(30) CHECK (proficiency IN ('native', 'fluent', 'intermediate', 'basic')),
   field_ids   INT[] NOT NULL DEFAULT '{}',
   UNIQUE (profile_id, name)
+);
+
+-- Every email and phone of the candidate (M-03). A person has more than one,
+-- so two addresses across sources are a union, not a disagreement: nothing is
+-- sent to the candidate to choose between them. Exactly one row per kind is
+-- the primary, the one from the newest source, and that value is also kept on
+-- profile.email / profile.phone. UNIQUE enforces the de-duplication the merge
+-- performs on the normalised value, so the same address from three sources is
+-- one row carrying all three field records.
+CREATE TABLE profile_contact (
+  contact_id SERIAL PRIMARY KEY,
+  profile_id INT NOT NULL REFERENCES profile(profile_id) ON DELETE CASCADE,
+  kind       contact_kind NOT NULL,
+  value      VARCHAR(255) NOT NULL,
+  is_primary BOOLEAN NOT NULL DEFAULT false,
+  field_ids  INT[] NOT NULL DEFAULT '{}',
+  UNIQUE (profile_id, kind, value)
 );
 
 CREATE TABLE profile_link (                     -- LinkedIn, GitHub, portfolio...
@@ -323,6 +357,9 @@ CREATE INDEX idx_project_profile     ON project(profile_id);
 CREATE INDEX idx_education_profile   ON education(profile_id);
 CREATE INDEX idx_cert_profile        ON certification(profile_id);
 CREATE INDEX idx_language_profile    ON language(profile_id);
+CREATE INDEX idx_contact_profile     ON profile_contact(profile_id);
+-- Find a candidate by any of their addresses, not only the primary one.
+CREATE INDEX idx_contact_value       ON profile_contact(kind, value);
 CREATE INDEX idx_link_profile        ON profile_link(profile_id);
 CREATE INDEX idx_vetting_profile     ON vetting_record(profile_id);
 CREATE INDEX idx_attempt_file        ON processing_attempt(file_id);

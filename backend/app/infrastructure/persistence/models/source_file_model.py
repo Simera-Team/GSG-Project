@@ -46,6 +46,21 @@ class SourceFileModel(Base):
         nullable=False
     )
 
+    # FR-053: the kind of source, kept separate from the file's format and set
+    # by the upload route. The conflict rules read it to prefer a vetted value
+    # over a self-reported one (FR-032) and to break ties by source priority.
+    source_kind: Mapped[str] = mapped_column(
+        Enum(
+            "cv",
+            "linkedin",
+            "vetting",
+            name="source_kind"
+        ),
+        nullable=False,
+        index=True,
+        default="cv",
+    )
+
     original_name: Mapped[str] = mapped_column(
         String(255),
         nullable=False
@@ -68,10 +83,16 @@ class SourceFileModel(Base):
             "done",
             "failed",
             "needs_review",
+            "rejected",
             name="file_status"
         ),
         nullable=False,
         server_default="uploaded"
+    )
+
+    rule: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True
     )
 
     extraction_method: Mapped[str | None] = mapped_column(

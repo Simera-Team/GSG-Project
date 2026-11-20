@@ -8,12 +8,17 @@ Nothing here commits; the use case commits once per job (NFR-026).
 import json
 from datetime import datetime, timezone
 
-from sqlalchemy import any_, delete, func, literal, select, text
+from sqlalchemy import any_, delete, func, literal, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.application.dto.profile_document import ProfileDocument
 from app.application.interfaces.processing_repository import IProcessingRepository
-from app.domain.entities.field_record import FieldRecord, ReviewItem, ReviewReason
+from app.domain.entities.field_record import (
+    CROSS_SOURCE_REASONS,
+    FieldRecord,
+    ReviewItem,
+)
+from app.domain.services.confidence import ConfidenceParts
 from app.domain.entities.processing_attempt import ProcessingAttempt
 from app.domain.entities.source_file import SourceFile
 from app.infrastructure.persistence.models import (
@@ -23,6 +28,7 @@ from app.infrastructure.persistence.models import (
     ExtractedFieldModel,
     LanguageModel,
     ProcessingAttemptModel,
+    ProfileContactModel,
     ProfileLinkModel,
     ProfileModel,
     ProfileSkillModel,
@@ -36,7 +42,7 @@ from app.infrastructure.persistence.models import (
 from app.infrastructure.persistence.repositories.file_repository import SourceFileRepository
 
 CHILD_TABLES = (ProfileSkillModel, WorkExperienceModel, EducationModel, CertificationModel,
-                ProjectModel, LanguageModel, ProfileLinkModel)
+                ProjectModel, LanguageModel, ProfileContactModel, ProfileLinkModel)
 
 
 class SqlProcessingRepository(IProcessingRepository):
@@ -51,10 +57,12 @@ class SqlProcessingRepository(IProcessingRepository):
 
     def set_file_status(self, file_id, status, *, error=None, extraction_method=None,
                         ocr_confidence=None, llm_response=None, retries=None,
-                        finished=False) -> None:
+                        finished=False, rule=None) -> None:
         model = self.db.get(SourceFileModel, file_id)
         model.status = status
         model.error_message = error
+        if rule is not None and hasattr(model, "rule"):
+            model.rule = rule
         if extraction_method is not None:
             model.extraction_method = extraction_method
         if ocr_confidence is not None:
@@ -109,6 +117,8 @@ class SqlProcessingRepository(IProcessingRepository):
                 raw_value=r.raw_value,
                 value=r.value,
                 confidence=r.confidence,
+                confidence_parts=r.confidence_parts.to_dict() if r.confidence_parts else None,
+                model_confidence=r.model_confidence,
                 evidence=r.evidence,
                 page=r.page,
                 evidence_status=r.evidence_status,
@@ -129,8 +139,14 @@ class SqlProcessingRepository(IProcessingRepository):
                    ProcessingAttemptModel.outcome == "valid")
             .group_by(ProcessingAttemptModel.file_id)
         )
-        rows = self.db.scalars(
-            select(ExtractedFieldModel)
+        # The source's kind and arrival time come along, because the conflict
+        # rules decide on them: a vetted value wins (FR-032) and otherwise the
+        # newer source wins (FR-031).
+        rows = self.db.execute(
+            select(ExtractedFieldModel,
+                   SourceFileModel.source_kind,
+                   SourceFileModel.uploaded_at)
+            .join(SourceFileModel, SourceFileModel.file_id == ExtractedFieldModel.file_id)
             .where(ExtractedFieldModel.attempt_id.in_(latest_valid))
             .order_by(ExtractedFieldModel.file_id, ExtractedFieldModel.field_id)
         ).all()
@@ -141,15 +157,41 @@ class SqlProcessingRepository(IProcessingRepository):
                 raw_value=m.raw_value, value=m.value, confidence=m.confidence,
                 evidence=m.evidence, page=m.page, evidence_status=m.evidence_status,
                 rule=m.rule or "", review_reasons=list(m.review_reasons or []),
+                source_kind=source_kind, source_uploaded_at=uploaded_at,
+                # Read back so a rebuild can keep explaining the score, and so
+                # the agreement boost (M-04) can add to parts that exist.
+                confidence_parts=_parts(m.confidence_parts),
+                model_confidence=m.model_confidence,
             )
-            for m in rows
+            for m, source_kind, uploaded_at in rows
         ]
+
+    def _save_contacts(self, profile_id: int, info) -> None:
+        """Write every email and phone of the profile, with its own ids (M-03)."""
+        for kind, contacts in (("email", info.emails), ("phone", info.phones)):
+            for contact in contacts:
+                self.db.add(ProfileContactModel(
+                    profile_id=profile_id, kind=kind, value=contact.value,
+                    is_primary=contact.is_primary, field_ids=list(contact.field_ids),
+                ))
+
+    def save_rejected_values(self, attempt_id, rejected) -> None:
+        """Store the values an R- rule dropped, with the attempt that read them.
+
+        They belong to the attempt and not to the profile: a rejected value was
+        never part of the candidate's data, only of what one model answer
+        claimed (R-03, NFR-028).
+        """
+        attempt = self.db.get(ProcessingAttemptModel, attempt_id)
+        if attempt is not None:
+            attempt.rejected = [r.to_dict() for r in rejected]
+            self.db.flush()
 
     # ---- review queue ----
 
     def replace_open_reviews(self, profile_id, file_id, items, field_id_map,
                              conflicts_only=False) -> None:
-        is_conflict = literal(ReviewReason.SOURCE_CONFLICT) == any_(ReviewItemModel.reasons)
+        is_conflict = _is_cross_source()
         query = delete(ReviewItemModel).where(ReviewItemModel.resolved.is_not(True))
         if conflicts_only:
             # Conflicts span files, so they are recomputed for the whole profile.
@@ -188,7 +230,7 @@ class SqlProcessingRepository(IProcessingRepository):
         self.db.flush()
 
     def _open_conflict_keys(self, profile_id: int) -> dict[tuple, int]:
-        is_conflict = literal(ReviewReason.SOURCE_CONFLICT) == any_(ReviewItemModel.reasons)
+        is_conflict = _is_cross_source()
         rows = self.db.execute(
             select(ReviewItemModel.review_id, ReviewItemModel.entity,
                    ReviewItemModel.field_name, ReviewOptionModel.field_id)
@@ -220,7 +262,10 @@ class SqlProcessingRepository(IProcessingRepository):
         info = profile.personal_info
         model = self.db.get(ProfileModel, profile_id)
         model.first_name, model.last_name = info.first_name, info.last_name
-        model.email, model.phone, model.city = info.email, info.phone, info.city
+        # The primary is denormalised onto the profile so the common read needs
+        # no join; every address and number lives in profile_contact below.
+        model.email, model.phone = info.primary_email, info.primary_phone
+        model.city = info.city
         model.title, model.summary = info.title, info.summary
         model.country_id = (
             self.db.scalar(select(CountryModel.country_id)
@@ -228,6 +273,10 @@ class SqlProcessingRepository(IProcessingRepository):
             if info.country else None
         )
         model.final_json = profile.model_dump(mode="json")
+
+        # M-03: one row per address and number, so a candidate can be found by
+        # any of them and each traces back to its field records (FR-063).
+        self._save_contacts(profile_id, info)
 
         confidence = {r.field_id: r.confidence for r in records}
         skill_ids = dict(self.db.execute(select(SkillModel.canonical_name, SkillModel.skill_id)).all())
@@ -265,6 +314,32 @@ class SqlProcessingRepository(IProcessingRepository):
             self.db.add(ProfileLinkModel(
                 profile_id=profile_id, type=link.type, url=link.url, field_ids=link.field_ids))
         self.db.flush()
+
+
+def _parts(stored) -> ConfidenceParts | None:
+    """Read stored confidence parts back, ignoring keys a later version added.
+
+    A record written before the confidence model existed has none, and its
+    score cannot be decomposed after the fact, so it stays None rather than
+    being given invented parts.
+    """
+    if not isinstance(stored, dict):
+        return None
+    known = {name: stored[name] for name in
+             ("base", "evidence", "validation", "mapping", "agreement")
+             if isinstance(stored.get(name), (int, float))}
+    return ConfidenceParts(**known) if known else None
+
+
+def _is_cross_source():
+    """SQL for "this review item came from comparing sources, not reading one".
+
+    Such an item belongs to the whole profile rather than to the file that
+    triggered the rebuild, so it is recomputed as a set instead of being
+    replaced per file (FR-033, FR-036).
+    """
+    return or_(*[literal(reason) == any_(ReviewItemModel.reasons)
+                 for reason in CROSS_SOURCE_REASONS])
 
 
 def _conflict_key(entity, field_name, field_ids) -> tuple:

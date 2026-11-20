@@ -30,6 +30,7 @@ class ProcessingAttempt:
     llm_response: str | None
     validation_result: dict[str, Any] | None
     error: str | None
+    carried_feedback: bool = False
 
     def to_dict(self) -> dict:
         data = asdict(self)

@@ -218,12 +218,17 @@ def get_review_service(
         SqlProcessingRepository,
     )
     from app.infrastructure.persistence.repositories.review_repository import SqlReviewRepository
+    from app.infrastructure.persistence.repositories.settings_repository import (
+        SqlSettingsRepository,
+    )
 
     return ReviewService(
         reviews=SqlReviewRepository(db),
         processing=SqlProcessingRepository(db),
         catalogs=SqlCatalogRepository(db),
         unit_of_work=SqlAlchemyUnitOfWork(db),
+        # FR-046 / FR-067: the limit in force now, not a deploy-time value.
+        confidence_threshold=SqlSettingsRepository(db).confidence_threshold(),
     )
 
 
@@ -236,3 +241,12 @@ def get_read_repository(
 ):
     from app.infrastructure.persistence.repositories.read_repository import SqlReadRepository
     return SqlReadRepository(db)
+
+
+def get_settings_repository(
+    db: Annotated[Session, Depends(get_db)]
+):
+    from app.infrastructure.persistence.repositories.settings_repository import (
+        SqlSettingsRepository,
+    )
+    return SqlSettingsRepository(db)
